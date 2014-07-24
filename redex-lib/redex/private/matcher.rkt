@@ -115,12 +115,13 @@ See match-a-pattern.rkt for more details
 ;;                                     (listof symbol)
 ;;                                     (listof (listof symbol)) -- keeps track of `primary' non-terminals
 ;;                                     hash[sym -o> pattern]
+;;                                     binding-forms
 ;;                                     (hash/c symbol? enum?)) ;; see enum.rkt
 
 (define-struct compiled-lang (lang delayed-cclang ht list-ht raw-across-ht raw-across-list-ht
                                    has-hole-or-hide-hole-ht cache bind-names-cache pict-builder
                                    literals nt-map collapsible-nts
-                                   enum-table))
+                                   binding-forms enum-table))
 (define (compiled-lang-cclang x) (force (compiled-lang-delayed-cclang x)))
 (define (compiled-lang-across-ht x)
   (compiled-lang-cclang x) ;; ensure this is computed
@@ -144,8 +145,8 @@ See match-a-pattern.rkt for more details
                (bind-exp rib)
                (loop (cdr ribs))))]))))
 
-;; compile-language : language-pict-info[see pict.rkt] (listof nt) (listof (uf-set/c symbol?)) -> compiled-lang
-(define (compile-language pict-info lang nt-map)
+;; compile-language : language-pict-info[see pict.rkt] (listof nt) (listof (uf-set/c symbol?)) binding-forms -> compiled-lang
+(define (compile-language pict-info lang nt-map binding-forms)
   (let* ([clang-ht (make-hasheq)]
          [clang-list-ht (make-hasheq)]
          [across-ht (make-hasheq)]
@@ -163,6 +164,7 @@ See match-a-pattern.rkt for more details
                                     literals
                                     nt-map
                                     collapsible-nts
+                                    binding-forms
                                     #f)]
          [non-list-nt-table (build-non-list-nt-label lang)]
          [list-nt-table (build-list-nt-label lang)]
@@ -2024,7 +2026,7 @@ See match-a-pattern.rkt for more details
  (bind? predicate/c)
  (bind-name (bind? . -> . symbol?))
  (bind-exp (bind? . -> . any/c))
- (compile-language (-> any/c (listof nt?) (hash/c symbol? uf-set?) compiled-lang?)))
+ (compile-language (-> any/c (listof nt?) (hash/c symbol? uf-set?) any/c #|PS: be more specific|# compiled-lang?)))
 (provide compiled-pattern? 
          print-stats)
 
