@@ -8,3 +8,9 @@
 ;;   object exports, for use by other syntax objects
 
 (struct binding-object (destructure exported-binders))
+
+;; Generate a map from free (exported) binders in the argument
+;; to fresh names.
+;; (corresponds to bo ⋈ bo in the Romeo paper)
+#;(define (freshen-binders bo)
+  )
