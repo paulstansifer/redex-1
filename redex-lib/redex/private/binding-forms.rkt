@@ -5,11 +5,11 @@
 
 
 (provide parse-binding-forms ;; just for testing
-         compile-binding-forms)
+         )
 
 ;; hash-table is a hasheq from symbol to binding-form
 
-;; A binding-form is, e.g., `let`, a feature of the language.
+;; A binding-form is a feature of the language (e.g. `let`)
 ;; The only thing we need to know is how to construct one, so it's just a constructor
 ;; It takes a list of Redex terms and returns a binding-object
 
@@ -25,10 +25,9 @@
 
 ;; === Parsing ===
 
-
 ;; takes the syntax that comes after a `#:binding-forms` and produces
 ;; an assoc of form names to an easier-to-use internal form
-(define (parse-binding-forms binding-forms-stx)
+(define (parse-binding-forms binding-forms-stx lang-name)
   (syntax-case binding-forms-stx ()
     [((bf-name . bf-body) . rest-plus-exports)
      (begin
@@ -45,12 +44,14 @@
 
        (define str-name (symbol->string (syntax->datum #'bf-name)))
 
-       (cons (list #'bf-name (bspec/names
-                              (surface-bspec->bspec #`(bf-body #:exports #,exports))
-                              #`TODO
-                              (generate-temporary (string-append str-name "-freshen"))
-                              (generate-temporary (string-append str-name "-ref-ren"))
-                              (generate-temporary (string-append str-name "-bnd-ren"))))
+       (cons (list #'bf-name
+                   (bspec/names
+                    (surface-bspec->bspec #`(bf-body #:exports #,exports))
+                    lang-name
+                    (generate-temporary (string-append str-name "-freshen"))
+                    (generate-temporary (string-append str-name "-bnd-freshen"))
+                    (generate-temporary (string-append str-name "-ref-ren"))
+                    (generate-temporary (string-append str-name "-bnd-ren"))))
              (parse-binding-forms rest-of-bfs)))]
     [() '()]))
 
@@ -59,7 +60,7 @@
         #:transparent)
 
 ;; this has the names of the redex metafunctions we generate, and the language, too
-(struct bspec/names (bs lang-name freshener-name r-renamer-name b-renamer-name)
+(struct bspec/names (bs lang-name freshener-name b-freshener-name r-renamer-name b-renamer-name)
         #:transparent)
 
 (define (surface-bspec->bspec surface-bspec)
@@ -130,6 +131,10 @@
  (define lambda-bspec (surface-bspec->bspec #'(((x) expr #:refers-to x)
                                                #:exports nothing)))
 
+ (define lambda-bspec/names (bspec/names lambda-bspec
+                                         #'lambda-calculus
+                                         #'l-f #'l-fb #'l-rr #'l-br))
+ 
  (check-equal?
   (desyntax-bspec lambda-bspec)
   (bspec `((x) ,(import/internal 'expr 'x))
@@ -204,35 +209,6 @@
  )
 
 
-;; === Renaming ===
-
-(define (rename-references σ v)
-  (match v
-         [(list sub-v ...) (map (lambda (x) (rename-references σ x)) sub-v)]
-         ;; TODO: identify binding objects and reference-rename them
-         [(? symbol? s)
-          (match (assoc s σ)
-                 [`(,_ ,new-s) new-s]
-                 [#f s])]))
-
-(define (rename-binders σ v)
-  (match v
-         [(list sub-v ...) (map (lambda (x) (rename-binders σ x)) sub-v)]
-         ;; TODO: identify binding objects and binder-rename them
-         [(? symbol? s)
-          (match (assoc s σ)
-                 [`(,_ ,new-s) new-s]
-                 [#f s])]))
-
-(module+
- test
- (define σ '((a aa) (s ss) (h hh)))
- 
- (check-equal? (rename-references σ
-                                  '(t h i (s i s (a (t) e) s) t))
-               '(t hh i (ss i ss (aa (t) e) ss) t))
- 
- )
 
 
 (define (reference-renamer-transcriber bs σ)
@@ -276,16 +252,7 @@
      ,(rename-references σ (term e)))))
 
 ;; === Beta handling ===
-(define (assoc-shadow lst-primary lst-secondary)
-  (append lst-primary
-          (filter (lambda (elt) (not (assoc (car elt) lst-primary)))
-                  lst-secondary)))
 
-
-(module+ test
- (check-equal? (assoc-shadow '((a 1) (b 2) (c 3) (d 4))
-                             '((e 5) (a 99) (b 999) (f 6) (g 7) (d 9999)))
-               '((a 1) (b 2) (c 3) (d 4) (e 5) (f 6) (g 7))))
 
 ;; Given a beta...
 ;; ...produces a metafunction body that merges substitutions in a way that
@@ -327,11 +294,29 @@
             (append G H))))
 
 
+(define (assoc-shadow lst-primary lst-secondary)
+  (append lst-primary
+          (filter (lambda (elt) (not (assoc (car elt) lst-primary)))
+                  lst-secondary)))
 
+
+(module+ test
+ (check-equal? (assoc-shadow '((a 1) (b 2) (c 3) (d 4))
+                             '((e 5) (a 99) (b 999) (f 6) (g 7) (d 9999)))
+               '((a 1) (b 2) (c 3) (d 4) (e 5) (f 6) (g 7))))
 
 ;; === Freshening ===
 
-(define (freshener bs)
+
+
+
+(define (freshener bs/n)
+  (define bs (bspec/names-bs bs/n))
+
+  (define imported-not-exported
+    (remove* (bspec-exported-nts bs) (bspec-imported-nts bs) 
+             bound-identifier=?))
+  
   ;; An assoc mapping nonterminal references (that have been imported)
   ;; to the names of the renamings that need to be applied.
   ;; Complicating matters, we can't name the renaming as a whole
@@ -344,7 +329,7 @@
            `(,(syntax->datum imported-nt-stx)
              ,#`((#,(generate-temporary (string-append "variable_from" s))
                   #,(generate-temporary (string-append "variable_to" s))) (... ...))))
-         (bspec-imported-nts bs)))
+         imported-not-exported))
 
   ;; The necessary `where` clauses to generate the renamings that we'll use
   (define renamings
@@ -386,18 +371,22 @@
                        (rename-binders (freshen-binders (term #,atom))
                                        (term #,atom))))])])))
 
-  #`(define-metafunction TODO-LANG-NAME
-      [(TODO-FRESHEN-NAME (variable_binding-form-name . #,(bspec-redex-pattern bs)))
+  #`(define-metafunction #,(bspec/names-lang-name bs/n)
+      [(#,(bspec/names-freshener-name bs/n)
+        (variable_binding-form-name . #,(bspec-redex-pattern bs)))
        (variable_binding-form-name . #,transcriber)
        #,@renamings])
   )
+
+
+
 
 (module+ test
          
  (define uq 'unquote) ;; oh boy
          
  (check-match
-  (syntax->datum (freshener lambda-bspec))
+  (syntax->datum (freshener lambda-bspec/names))
   `(define-metafunction ,_
      [(,_ (,bf-name (x) expr))
       (,bf-name
@@ -412,8 +401,37 @@
              (,uq (freshen-binders (term x))))])))
 
 
+(define (binder-freshener bs/n)
+  (define bs (bspec/names-bs bs/n))
 
+  ;; a little impedence mismatch here: we just want
+  ;; to recursively call `freshen-binders`, but
+  ;; `beta->subst-merger` was designed to look up
+  ;; generated names for `where`-bound substitutions,
+  ;; so we pregenerate a table for this
+  (define sub-freshenings
+    (map (lambda (exported-nt-stx)
+           `(,(syntax->datum exported-nt-stx)
+             ,#`(freshen-binders (term #,exported-nt-stx))))
+         (bspec-exported-nts bs)))
 
+  #`(define-metafunction #,(bspec/names-lang-name bs/n)
+      [(#,(bspec/names-b-freshener-name bs/n)
+        (variable_binding-form-name . #,(bspec-redex-pattern bs)))
+       ,#,(beta->subst-merger (bspec-export-beta bs) sub-freshenings)]))
+
+(module+ test
+ (define let*-clause-bspec
+   (surface-bspec->bspec #'((x expr_val let*-clause_next #:refers-to x)
+                            #:exports (shadow x let*-clause_next)) ))
+ (define let*-clause-bspec/names
+   (bspec/names let*-clause-bspec #'scheme #'wh #'at #'ev #'er))
+
+ (check-match
+  (syntax->datum (binder-freshener let*-clause-bspec/names))
+  `(define-metafunction ,_
+     [(,_ (,bf-name x expr_val let*-clause_next))
+      (,uq (assoc-shadow (freshen-binders (term x)) (freshen-binders (term let*-clause_next))))])))
 
 
  ;; we might not need to parse betas; aren't they already in a good form?
@@ -426,16 +444,4 @@
      
      ]))
 
-
-(define (compile-binding-forms binding-forms-stx)
-  (define bf-assoc (parse-binding-forms binding-forms-stx))
-
-  ;; PS: actually compile here (need to figure out how to handle procedures.
-  ;; In particular, we need to do a matching that knows that `a_!_1` and
-  ;; another `a_!_1` are not the same name. We could special-case that out, since
-  ;; `_!_` is clearly wrong in a reference to a value anyways, but that sounds
-  ;; fragile)
-  
-  (make-hasheq bf-assoc))
-
-
+;; TODO: worry about things like `(rib a_!_1)`
