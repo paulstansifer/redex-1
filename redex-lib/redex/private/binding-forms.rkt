@@ -1,11 +1,10 @@
 #lang racket
 
-
 (begin-for-syntax ;; this covers most of the file; let's not indent
 (require racket)
 (require (for-template "binding-objects.rkt"))
 (require (for-template "reduction-semantics.rkt"))
-(require (only-in "term.rkt" term))
+(require (for-template (only-in "term.rkt" term)))
 (require (for-template "error.rkt"))
 (require (only-in racket/syntax generate-temporary))
 
@@ -153,7 +152,7 @@
 
  (define lambda-bspec/names (bspec/names lambda-bspec
                                          #'lambda-calculus
-                                         #'l-f #'l-fb #'l-rr #'l-br))
+                                         #'l-f #'l-fb #'l-rr #'l-br #'l-ck))
  
  (check-equal?
   (desyntax-bspec lambda-bspec)
@@ -171,6 +170,16 @@
          `(rib e f) `(h e b) `(e f) `(h e b f)))
 
 
+
+ ;; imported, exported, imported and exported
+ (define ieie-bspec
+   (surface-bspec->bspec
+    #'((i e ie expr_1 #:refers-to (shadow ie i) expr_2 #:refers-to (shadow i ie))
+       #:exports (shadow e ie))))
+
+ (define ieie-bspec/names
+   (bspec/names ieie-bspec #f #f #f #f #f #f))
+ 
  )
 
 
@@ -179,6 +188,9 @@
 
 (define (has-name? lst n)
   (memf (lambda (x) (bound-identifier=? x n)) lst))
+
+(define (name-assoc n lst)
+  (assf (lambda (x) (bound-identifier=? x n)) lst))
 
 ;; TODO: this is handling syntax; maybe it should be vanilla data?
 (define (names-mentioned-in-beta beta)
@@ -287,8 +299,7 @@
   (syntax->datum (reference-renamer lambda-bspec/names))
   `(define-metafunction ,_
      [(,_ ((,v-f ,v-t) ,_) (,bf-name (x) expr))
-      (,bf-name . ,_)]))
- )
+      (,bf-name . ,_)])))
 
 (define (pattern-checker bs/n)
   (define bs (bspec/names-bs bs/n))
@@ -300,15 +311,10 @@
        #t]
       [(#,(bspec/names-pattern-checker-name bs/n) any)
        ,(redex-error #f
-         "cannot construct ~a; it does not match its given binding pattern ~a"
+         "cannot construct ~a; it does not match the pattern ~a from its binding spec"
          (term any) '(_ . #,(bspec-redex-pattern bs)))]))
 
 
-
-#;
-(define-metafunction lambda-calculus
-  ((l-rr ((variable_frommmm variable_to) ...) (variable_binding-form-name (x) expr))
-   (variable_binding-form-name ((unquote (if (symbol? (term x)) (term x) (rename-references (term ((variable_frommmm variable_to) ...)) (term x))))) (unquote (rename-references (term ((variable_frommmm variable_to) ...)) (term expr))))))
 ;; === Beta handling ===
 
 
@@ -331,7 +337,7 @@
       [(shadow sub-beta . sub-betas)
        #`(assoc-shadow #,(loop #`sub-beta)
                        #,(loop #`(shadow . sub-betas)))]
-      [nt-ref (cadr (assoc (syntax->datum #`nt-ref) map-of-renamings))])))
+      [nt-ref (cadr (name-assoc #`nt-ref map-of-renamings))])))
 
 (module+ test
 
@@ -343,7 +349,7 @@
     (beta->subst-merger #'(rib (shadow (rib a b (rib) (shadow))
                                        (rib c d) nothing (shadow e f))
                                g h)
-                        '((a A) (b B) (c C) (d D) (e E) (f F) (g G) (h H))))
+                        `((,#'a A) (,#'b B) (,#'c C) (,#'d D) (,#'e E) (,#'f F) (,#'g G) (,#'h H))))
    '(append (assoc-shadow (append A (append B (append '() '())))
                           (assoc-shadow
                            (append C D)
@@ -352,29 +358,15 @@
             (append G H))))
 
 
-(define (assoc-shadow lst-primary lst-secondary)
-  (append lst-primary
-          (filter (lambda (elt) (not (assoc (car elt) lst-primary)))
-                  lst-secondary)))
 
-
-(module+ test
- (check-equal? (assoc-shadow '((a 1) (b 2) (c 3) (d 4))
-                             '((e 5) (a 99) (b 999) (f 6) (g 7) (d 9999)))
-               '((a 1) (b 2) (c 3) (d 4) (e 5) (f 6) (g 7))))
 
 ;; === Freshening ===
-
-
-
 
 (define (freshener bs/n)
   (define bs (bspec/names-bs bs/n))
 
-  (define imported-not-exported
-    (remove* (bspec-exported-nts bs) (bspec-imported-nts bs) 
-             bound-identifier=?))
-  
+  (define imported-names (bspec-imported-nts bs))
+
   ;; An assoc mapping nonterminal references (that have been imported)
   ;; to the names of the renamings that need to be applied.
   ;; Complicating matters, we can't name the renaming as a whole
@@ -382,18 +374,30 @@
   ;; call the renaming by a pattern like
   ;; `((variable_from-98 variable_to-98) ...)' 
   (define renaming-pats
-    (map (lambda (imported-nt-stx)
-           (define s (symbol->string (syntax->datum imported-nt-stx)))
-           `(,(syntax->datum imported-nt-stx)
-             ,#`((#,(generate-temporary (string-append "variable_from" s))
-                  #,(generate-temporary (string-append "variable_to" s))) (... ...))))
-         imported-not-exported))
-
+    (map
+     (lambda (imported-nt-stx)
+       (define s (symbol->string (syntax->datum imported-nt-stx)))
+       `(,imported-nt-stx
+         , #`((#,(generate-temporary (string-append "variable_from" s))
+               #,(generate-temporary (string-append "variable_to" s))) (... ...))))
+     imported-names))
+  
   ;; The necessary `where` clauses to generate the renamings that we'll use
   (define renamings
     (map (match-lambda
           [`(,imported-nt ,vpat)
-           #`(where #,vpat ,(freshen-binders (term #,imported-nt)))])
+           (if (has-name? (bspec-exported-nts bs) imported-nt)
+               ;; Exported names are free, so don't rename them
+               ;; (but do participate correctly in shadowing)
+               #`(where #,vpat ,(smash-substitution
+                                 (freshen-binders (term #,imported-nt))))
+               #`(where #,vpat ,(freshen-binders (term #,imported-nt))))])
+         renaming-pats))
+
+  ;; will be spliced into (unquote ...)ed bits of the RHS; we need `term`
+  (define renaming-pats/wrapped
+    (map (match-lambda [`(,nt ,r-pat)
+                        `(,nt ,#`(term #,r-pat))])
          renaming-pats))
 
   (define transcriber
@@ -401,40 +405,41 @@
       (match body
         [`() #`()]
         [(import/internal body-sub beta)
-         #`,(rename-references (term #,(beta->subst-merger beta renaming-pats))
+         #`,(rename-references #,(beta->subst-merger beta renaming-pats/wrapped)
                                (term #,(loop body-sub)))]
         [`(,body-sub . ,rest-of-body)
          #`(#,(loop body-sub) . #,(loop rest-of-body))]
         [atom
-         (match (assoc (syntax->datum atom) renaming-pats)
-           [`(,_ ,renaming-pat)
-            #`,(rename-binders (term #,renaming-pat) (term #,atom))]
-           [#f
-            (if (has-name? (bspec-exported-nts bs) atom)
-                #`(term #,atom)
-                ;; names that aren't imported or exported are references
-                #`,(if (symbol? (term #,atom)) 
-                       (term #,atom)
-                       ;; TODO: this minor corner case might slow things down.
-                       ;; Suggested optimization: bail out early in the very
-                       ;; common case where #,atom exports nothing.
-                       ;; 
-                       ;; What's going on here is that, if an nt has free binders,
-                       ;; but doesn't get imported or exported, they still need to
-                       ;; be freshened. (effectively, they're imported into zero places)
-                       ;; It's a shame, binders that don't get imported/exported
-                       ;; have no use at all! But our clients might implement
-                       ;; a perfectly reasonable language, which their clients
-                       ;; will use in this way, so it should work right.
-                       (rename-binders (freshen-binders (term #,atom))
-                                       (term #,atom))))])])))
+         (if (has-name? (bspec-exported-nts bs) atom)
+             atom
+             (match
+              (name-assoc atom renaming-pats/wrapped)
+              [`(,_ ,renaming-pat)
+               #`,(rename-binders #,renaming-pat (term #,atom))]
+              [#f
+               ;; names that aren't imported or exported are references
+               #`,(if (symbol? (term #,atom)) 
+                      (term #,atom)
+                      ;; TODO: this minor corner case might slow things down.
+                      ;; Suggested optimization: bail out early in the very
+                      ;; common case where #,atom exports nothing.
+                      ;; 
+                      ;; What's going on here is that, if an nt has free binders,
+                      ;; but doesn't get imported or exported, they still need to
+                      ;; be freshened. (effectively, they're imported into zero places)
+                      ;; It's a shame, binders that don't get imported/exported
+                      ;; have no use at all! But our clients might implement
+                      ;; a perfectly reasonable language, which their clients
+                      ;; will use in this way, so it should work right.
+                      (rename-binders (freshen-binders (term #,atom))
+                                      (term #,atom)))]))])))
 
   #`(define-metafunction #,(bspec/names-lang-name bs/n)
       [(#,(bspec/names-freshener-name bs/n)
         (variable_binding-form-name . #,(bspec-redex-pattern bs)))
        (variable_binding-form-name . #,transcriber)
        #,@renamings])
-  )
+ )
 
 
 
@@ -456,7 +461,23 @@
                        (term expr)
                        (rename-binders (freshen-binders (term expr)) (term expr))))))))
       (where ,x-σ
-             (,uq (freshen-binders (term x))))])))
+             (,uq (freshen-binders (term x))))]))
+ 
+ (check-match
+  (syntax->datum (freshener ieie-bspec/names))
+  `(define-metafunction ,mf-name
+     [(,_ (,bf-name ,i ,e ,ie ,expr_1 ,expr_2))
+      (,bf-name
+       (,uq (rename-binders (term ,i-σ) (term ,i)))
+       ,e
+       ,ie
+       (,uq (rename-references
+             (assoc-shadow (term ,ie-σ) (term ,i-σ)) ,_))
+       (,uq (rename-references
+             (assoc-shadow (term ,i-σ) (term ,ie-σ)) ,_)))
+      (where ,ie-σ (,uq (smash-substitution (freshen-binders (term ie)))))
+      (where ,i-σ (,uq (freshen-binders (term i))))]))
+ )
 
 
 (define (binder-freshener bs/n)
@@ -469,7 +490,7 @@
   ;; so we pregenerate a table for this
   (define sub-freshenings
     (map (lambda (exported-nt-stx)
-           `(,(syntax->datum exported-nt-stx)
+           `(,exported-nt-stx
              ,#`(freshen-binders (term #,exported-nt-stx))))
          (bspec-exported-nts bs)))
 
@@ -483,7 +504,7 @@
    (surface-bspec->bspec #'((x expr_val let*-clause_next #:refers-to x)
                             #:exports (shadow x let*-clause_next)) ))
  (define let*-clause-bspec/names
-   (bspec/names let*-clause-bspec #'scheme #'wh #'at #'ev #'er))
+   (bspec/names let*-clause-bspec #'scheme #'wh #'at #'ev #'er #'rr))
 
  (check-match
   (syntax->datum (binder-freshener let*-clause-bspec/names))
@@ -516,10 +537,12 @@
              (lambda () (term (#,(bspec/names-b-freshener-name bs/n) ,v)))
              ;; ref-rename
              (lambda (σ) (make-binding-object
-                          (term (#,(bspec/names-r-renamer-name bs/n) ,σ ,v))))
+                          (term (#,(bspec/names-r-renamer-name bs/n) ,σ ,v))
+                          #f))
              ;; bnd-rename
              (lambda (σ) (make-binding-object
-                          (term (#,(bspec/names-b-renamer-name bs/n) ,σ ,v))))))))
+                          (term (#,(bspec/names-b-renamer-name bs/n) ,σ ,v))
+                          #f))))))
       make-binding-object))
 
 
@@ -546,13 +569,26 @@
 ) ;; begin-for-syntax
 ;; Now, we're in phase 0:
 
-(require (only-in "term.rkt" term))
+;; === Runtime utility functions ===
+
+;; Turns a renaming into a no-op renaming that affects the same names.
+;; Useful to "reserve" spots for names that are non-free, but imported
+(define (smash-substitution σ)
+  (map (lambda (pair) `(,(car pair) ,(car pair))) σ))
 
 
+(define (assoc-shadow lst-primary lst-secondary)
+  (append lst-primary
+          (filter (lambda (elt) (not (assoc (car elt) lst-primary)))
+                  lst-secondary)))
 
+#| Sadly tests aren't available at this phase
 
-
-
+ (module+ test
+  (check-equal? (assoc-shadow '((a 1) (b 2) (c 3) (d 4))
+                              '((e 5) (a 99) (b 999) (f 6) (g 7) (d 9999)))
+                '((a 1) (b 2) (c 3) (d 4) (e 5) (f 6) (g 7))))
+|#
 
 ;; TODO: worry about things like `(rib a_!_1)`
 
