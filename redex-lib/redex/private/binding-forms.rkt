@@ -1,13 +1,26 @@
 #lang racket
-(require "binding-objects.rkt")
-(require rackunit)
+
+
+(begin-for-syntax ;; this covers most of the file; let's not indent
+(require racket)
+(require (for-template "binding-objects.rkt"))
+(require (for-template "reduction-semantics.rkt"))
+(require (only-in "term.rkt" term))
+(require (for-template "error.rkt"))
 (require (only-in racket/syntax generate-temporary))
 
+(provide parse-binding-forms
+         freshener
+         binder-freshener
+         reference-renamer
+         binder-renamer
+         setup-binding-forms
+         binding-object-generator)
 
-(provide parse-binding-forms ;; just for testing
-         )
 
-;; hash-table is a hasheq from symbol to binding-form
+
+
+ ;; hash-table is a hasheq from symbol to binding-form
 
 ;; A binding-form is a feature of the language (e.g. `let`)
 ;; The only thing we need to know is how to construct one, so it's just a constructor
@@ -38,7 +51,7 @@
            [(#:exports exports-beta . rest-of-bfs) (values #'rest-of-bfs #'exports-beta)]
            [(#:exports) (raise-syntax-error 'define-language
                                             "#:exports requires an argument"
-                                            #f #'rest-plus-exports)]
+                                            #'rest-plus-exports)]
            [(rest-of-bfs ...)
             (values #'(rest-of-bfs ...) #'nothing)]))
 
@@ -51,21 +64,28 @@
                     (generate-temporary (string-append str-name "-freshen"))
                     (generate-temporary (string-append str-name "-bnd-freshen"))
                     (generate-temporary (string-append str-name "-ref-ren"))
-                    (generate-temporary (string-append str-name "-bnd-ren"))))
-             (parse-binding-forms rest-of-bfs)))]
-    [() '()]))
+                    (generate-temporary (string-append str-name "-bnd-ren"))
+                    (generate-temporary (string-append str-name "-pattern-checker"))))
+             (parse-binding-forms rest-of-bfs lang-name)))]
+    [() '()]
+    [anything (raise-syntax-error 'define-language "expected a parenthesized binding form." #`anything)]))
 
 (struct bspec
         (body redex-pattern export-beta imported-nts exported-nts all-mentioned-nts)
         #:transparent)
 
 ;; this has the names of the redex metafunctions we generate, and the language, too
-(struct bspec/names (bs lang-name freshener-name b-freshener-name r-renamer-name b-renamer-name)
+(struct bspec/names (bs lang-name freshener-name b-freshener-name
+                        r-renamer-name b-renamer-name
+                        pattern-checker-name)
         #:transparent)
 
 (define (surface-bspec->bspec surface-bspec)
   (define-values (sbody export-beta)
-    (syntax-case surface-bspec () [(b #:exports e) (values #'b #'e)]))
+    (syntax-case surface-bspec ()
+      [(b #:exports e) (values #'b #'e)]
+      [_ (raise-syntax-error 'surface-bspec->bspec "expected `(body #:exports beta)`"
+                             surface-bspec)]))
 
   ;; replaces `#:refers-to` with an easier-to-maniuplate syntax
   (define body
@@ -109,8 +129,8 @@
   (bspec body redex-pattern export-beta import-names export-names
          (dedupe-names (append import-names export-names))))
 
-(module+
- test
+(module+ test
+ (require rackunit)
 
  (define (ds s)
    (match s
@@ -211,7 +231,7 @@
 
 
 
-(define (reference-renamer-transcriber bs σ)
+(define (reference-renamer-transcriber σ bs)
   (let loop [(body (bspec-body bs))]
     (match body
            [(import/internal sub-body beta) (loop sub-body)]
@@ -220,18 +240,21 @@
             (if (has-name? (bspec-all-mentioned-nts bs) atom)
                 #`,(if (symbol? (term #,atom))
                         (term #,atom)
-                        (rename-references #,σ (term #,atom)))
-                #`,(rename-references #,σ (term #,atom)))])))
+                        (rename-references (term #,σ) (term #,atom)))
+                #`,(rename-references (term #,σ) (term #,atom)))])))
 
-(define (reference-renamer bs renamer-name language-name)
+(define (reference-renamer bs/n)
+  (define bs (bspec/names-bs bs/n))
   ;; We want a Redex `...`, not a #` one
   (define σ #`((variable_from variable_to) (... ...)))
-  #`(define-metafunction #,language-name
-      [(#,renamer-name (variable_binding-form-name . #,(bspec-redex-pattern bs)) #,σ)
-       (variable_binding-form-name . #,(reference-renamer-transcriber bs σ))]))
+  
+  #`(define-metafunction #,(bspec/names-lang-name bs/n)
+      [(#,(bspec/names-r-renamer-name bs/n)  #,σ
+        (variable_binding-form-name . #,(bspec-redex-pattern bs)))
+       (variable_binding-form-name . #,(reference-renamer-transcriber σ bs))]))
 
 
-(define (binder-renamer-transcriber bs σ)
+(define (binder-renamer-transcriber σ bs)
   (let loop [(body (bspec-body bs))]
     (match body
            [(import/internal sub-body beta) (loop sub-body)]
@@ -239,18 +262,53 @@
            [atom
             (if (has-name? (bspec-all-mentioned-nts bs) atom)
                 #`,(if (symbol? (term #,atom))
-                       (rename-binders #,σ (term #,atom))
+                       (rename-binders (term #,σ) (term #,atom))
                        (term #,atom))
                 atom)])))
 
+(define (binder-renamer bs/n)
+  (define bs (bspec/names-bs bs/n))
+  ;; We want a Redex `...`, not a #` one
+  (define σ #`((variable_from variable_to) (... ...)))
+  #`(define-metafunction #,(bspec/names-lang-name bs/n)
+      [(#,(bspec/names-b-renamer-name bs/n)  #,σ
+        (variable_binding-form-name . #,(bspec-redex-pattern bs)))
+       (variable_binding-form-name . #,(binder-renamer-transcriber σ bs))]))
+
+
+
 (module+ test
  (check-equal?
-  (syntax->datum (reference-renamer-transcriber
-                  (surface-bspec->bspec
-                   #'(((x) e #:refers-to x) #:exports nothing)) #'σ))
-  '((,(if (symbol? (term x)) (term x) (rename-references σ (term x))))
-     ,(rename-references σ (term e)))))
+  (syntax->datum (reference-renamer-transcriber #'σ lambda-bspec))
+  '((,(if (symbol? (term x)) (term x) (rename-references (term σ) (term x))))
+     ,(rename-references (term σ) (term expr))))
 
+ (check-match
+  (syntax->datum (reference-renamer lambda-bspec/names))
+  `(define-metafunction ,_
+     [(,_ ((,v-f ,v-t) ,_) (,bf-name (x) expr))
+      (,bf-name . ,_)]))
+ )
+
+(define (pattern-checker bs/n)
+  (define bs (bspec/names-bs bs/n))
+  #`(define-metafunction #,(bspec/names-lang-name bs/n)
+      [(#,(bspec/names-pattern-checker-name bs/n)
+        ;; doesn't check the head symbol, but since that's used to *find* the
+        ;; binding form, I can't imagine that being a problem
+        (variable_binding-form-name . #,(bspec-redex-pattern bs)))
+       #t]
+      [(#,(bspec/names-pattern-checker-name bs/n) any)
+       ,(redex-error #f
+         "cannot construct ~a; it does not match its given binding pattern ~a"
+         (term any) '(_ . #,(bspec-redex-pattern bs)))]))
+
+
+
+#;
+(define-metafunction lambda-calculus
+  ((l-rr ((variable_frommmm variable_to) ...) (variable_binding-form-name (x) expr))
+   (variable_binding-form-name ((unquote (if (symbol? (term x)) (term x) (rename-references (term ((variable_frommmm variable_to) ...)) (term x))))) (unquote (rename-references (term ((variable_frommmm variable_to) ...)) (term expr))))))
 ;; === Beta handling ===
 
 
@@ -434,14 +492,72 @@
       (,uq (assoc-shadow (freshen-binders (term x)) (freshen-binders (term let*-clause_next))))])))
 
 
- ;; we might not need to parse betas; aren't they already in a good form?
 
-#;(struct shadow (beta))
+;; === Tying everything together ===
 
-#;(define (parse-beta beta-stx)
-  (syntax-case beta-stx (shadow rib nothing) ;; PS: maybe these should be syntax nonces
-    [(shadow beta ...)
-     
-     ]))
+(define (binding-object-generator bs/n)  
+  #`(letrec
+        ((make-binding-object
+          ;; TODO: forbid `variable-prefix`, `side-condition`, and
+          ;; plain symbols in binding patterns because (a) they're unnecessary
+          ;; and (b) they could make `ref-rename` and `bnd-rename` generate
+          ;; binding-objects that the metafunctions would fail to match on.
+          (lambda (v [check-pattern? #t])
+            (cond [check-pattern?
+                   ;; call the metafunction for the error side-effect,
+                   ;; if `v` doesn't match the pattern
+                   (term (#,(bspec/names-pattern-checker-name bs/n) ,v))])
+            ;; call out to the metafunctions which we've given generated names
+            (binding-object
+             ;; destructure (note that this specifically does not build a new
+             ;; binding object; this is the safe way of extracting subterms)
+             (lambda () (term (#,(bspec/names-freshener-name bs/n) ,v)))
+             ;; freshen binders (returns a σ)
+             (lambda () (term (#,(bspec/names-b-freshener-name bs/n) ,v)))
+             ;; ref-rename
+             (lambda (σ) (make-binding-object
+                          (term (#,(bspec/names-r-renamer-name bs/n) ,σ ,v))))
+             ;; bnd-rename
+             (lambda (σ) (make-binding-object
+                          (term (#,(bspec/names-b-renamer-name bs/n) ,σ ,v))))))))
+      make-binding-object))
+
+
+(define (setup-binding-forms stx)
+  (syntax-case stx ()
+    [(setup-binding-forms binding-forms-stx lang-name)
+     #`(begin . 
+         #,(let loop ((bs/ns (parse-binding-forms #`binding-forms-stx #`lang-name)))
+             (match bs/ns
+                    [`((,bf-name ,bs/n) . ,rest)
+                     #`(#,(freshener bs/n)
+                        #,(binder-freshener bs/n)
+                        #,(reference-renamer bs/n)
+                        #,(binder-renamer bs/n)
+                        #,(pattern-checker bs/n)
+                        ;; TODO: do we really want the constructors to have the
+                        ;; name of their binding form? It *is* sort of the
+                        ;; obvious thing to do, however.
+                        (define #,bf-name #,(binding-object-generator bs/n))
+                        . #,(loop rest))]
+                    [`() #`()])))]))
+
+
+) ;; begin-for-syntax
+;; Now, we're in phase 0:
+
+(require (only-in "term.rkt" term))
+
+
+
+
+
+
 
 ;; TODO: worry about things like `(rib a_!_1)`
+
+
+
+
+
+
