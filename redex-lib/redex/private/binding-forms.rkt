@@ -5,6 +5,7 @@
 (require (for-template "binding-objects.rkt"))
 (require (for-template "reduction-semantics.rkt"))
 (require (for-template (only-in "term.rkt" term)))
+(require (for-template (only-in "matcher.rkt" caching-enabled?)))
 (require (for-template "error.rkt"))
 (require (only-in racket/syntax generate-temporary))
 
@@ -532,9 +533,13 @@
             (binding-object
              ;; destructure (note that this specifically does not build a new
              ;; binding object; this is the safe way of extracting subterms)
-             (lambda () (term (#,(bspec/names-freshener-name bs/n) ,v)))
+             (lambda () 
+               (parameterize ([caching-enabled? #f]) ;; nondeterministic!
+                             (term (#,(bspec/names-freshener-name bs/n) ,v))))
              ;; freshen binders (returns a σ)
-             (lambda () (term (#,(bspec/names-b-freshener-name bs/n) ,v)))
+             (lambda () 
+               (parameterize ([caching-enabled? #f]) ;; nondeterministic!
+                             (term (#,(bspec/names-b-freshener-name bs/n) ,v))))
              ;; ref-rename
              (lambda (σ) (make-binding-object
                           (term (#,(bspec/names-r-renamer-name bs/n) ,σ ,v))

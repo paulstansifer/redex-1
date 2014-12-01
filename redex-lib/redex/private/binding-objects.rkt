@@ -26,7 +26,8 @@
          [(? symbol? s)
           (match (assoc s σ)
                  [`(,_ ,new-s) new-s]
-                 [#f s])]))
+                 [#f s])]
+         [anything-else anything-else]))
 
 (define (rename-binders σ v)
   (match v
@@ -35,8 +36,9 @@
          [(? symbol? s)
           (match (assoc s σ)
                  [`(,_ ,new-s) new-s]
-                 [#f s])]))
-
+                 [#f s])]
+         [anything-else anything-else]))
+ 
 (module+ test
  (require rackunit)
  
@@ -56,8 +58,8 @@
          [(list sub-v ...) '()] ;; sequences export nothing
          [(binding-object _ bf _ _) (bf)]
          ;; This gensym is what ultimately does all name freshening:
-         [(? symbol? s) `((,s ,(gensym)))]))
-
+         [(? symbol? s) `((,s ,(gensym)))]
+         [anything-else anything-else]))
 
 
 
