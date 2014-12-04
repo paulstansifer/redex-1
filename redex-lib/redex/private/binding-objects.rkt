@@ -1,13 +1,13 @@
 #lang racket
-(provide binding-object binding-object-destructure rename-references rename-binders freshen-binders)
+(provide binding-object destructure noop-binder-substitution rename-references rename-binders destructure/rec)
 
 ;; A binding-object is an opaque piece of syntax with binding information.
-;; * ((binding-object-destructure bo)) emits a list of subterms.
-;;   Thanks to `gensym`, it needs no other information to generate fresh terms
-;;   each time. For example, the binding-object corresponding to `(term (lambda (x) x))`
-;;   might (when invoked, to destructure it) return `(list (term (x57)) (term x57))`
-;;
-;; The remaining fields are for internal use only. 
+;; Its fields are for internal use only; use `destructure` to extract its
+;; structure.
+;; * ((binding-object-destructure/rec) top-level?) ... well, it's complex,
+;;   but it's the heart of `-destructure`.
+;; * ((binding-object-noop-binder-sibst)) emits a no-op σ whose range is
+;;   the exported binders of the syntax.
 ;; * ((binding-object-ref-rename bo) σ) emits a new binding object with its
 ;;   references renamed according to σ
 ;; * ((binding-object-bnd-rename bo) σ) emits a new binding object with its
@@ -15,14 +15,15 @@
 ;; * ((binding-object-freshen-binders bo)) emits a σ mapping its exported
 ;;   binders to fresh names
 
-(struct binding-object (destructure bnd-freshen ref-rename bnd-rename))
+(struct binding-object
+        (destructure destructure/rec noop-binder-subst ref-rename bnd-rename))
 
 ;; === Renaming ===
 
 (define (rename-references σ v)
   (match v
          [(list sub-v ...) (map (lambda (x) (rename-references σ x)) sub-v)]
-         [(binding-object _ _ rr _) (rr σ)]
+         [(binding-object _ _ _ rr _) (rr σ)]
          [(? symbol? s)
           (match (assoc s σ)
                  [`(,_ ,new-s) new-s]
@@ -32,7 +33,7 @@
 (define (rename-binders σ v)
   (match v
          [(list sub-v ...) (map (lambda (x) (rename-binders σ x)) sub-v)]
-         [(binding-object _ _ _ br) (br σ)]
+         [(binding-object _ _ _ _ br) (br σ)]
          [(? symbol? s)
           (match (assoc s σ)
                  [`(,_ ,new-s) new-s]
@@ -49,16 +50,35 @@
                '(t hh i (ss i ss (aa (t) e) ss) t)))
 
 ;; === Freshening ===
+;; Destructure a form, freshening exposable atoms in the process
+(define (destructure v)
+  (match v
+    [(binding-object des _ _ _ _) (des)]
+    ;; No binding structure at this level:     
+    [anything-else anything-else]))
 
-;; Generate a map from free (exported) binders in the argument
-;; to fresh names.
-;; (corresponds to v ⋈ v in the Romeo paper)
-(define (freshen-binders v)
+
+;; Returns a new `v` with its exported binders (and the things that import them)
+;; freshened, and the substitution that freshened them. (it is assumed that
+;; whatever `v` exports is exported to the top level (otherwise,
+;; `noop-binder-subst` is what you want))
+(define (destructure/rec v)
+  (match v
+    [(list sub-v ...) `((,sub-v ...) ())] ;; nothing exported
+    [(binding-object _ dr _ _ _) (dr)]
+    ;; Exported, so it's a binder.
+    [(? symbol? s)
+     ;; This gensym is what ultimately does all name freshening:
+     (let ((new-s (gensym))) `(,new-s ((,s ,new-s))))]
+    [anything-else `(,anything-else ())]))
+
+;; Generate a substitution that doesn't change anything, but whose
+;; range is all the binders in `v`
+(define (noop-binder-substitution v)
   (match v
          [(list sub-v ...) '()] ;; sequences export nothing
-         [(binding-object _ bf _ _) (bf)]
-         ;; This gensym is what ultimately does all name freshening:
-         [(? symbol? s) `((,s ,(gensym)))]
+         [(binding-object _ _ nbs _ _) (nbs)]
+         [(? symbol? s) `((,s ,s))]
          [anything-else anything-else]))
 
 
