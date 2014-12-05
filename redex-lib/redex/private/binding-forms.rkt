@@ -72,7 +72,7 @@
         #:transparent)
 
 ;; this has the names of the redex metafunctions we generate, and the language, too
-(struct bspec/names (bs lang-name freshener-name b-freshener-name
+(struct bspec/names (bs lang-name freshener-name noop-binder-subst-name
                         r-renamer-name b-renamer-name
                         pattern-checker-name)
         #:transparent)
@@ -560,10 +560,9 @@
                                (term (#,(bspec/names-freshener-name bs/n) ,v #f)))
                  ;; repack the binding object: its time has not yet come
                  `(,(make-binding-object d/r-v) ,subst)))
-             ;; freshen binders (returns a σ)
-             (lambda () 
-               (parameterize ([caching-enabled? #f]) ;; nondeterministic!
-                             (term (#,(bspec/names-b-freshener-name bs/n) ,v))))
+             ;; noop-binder-subst (returns a σ)
+             (lambda ()
+               (term (#,(bspec/names-noop-binder-subst-name bs/n) ,v)))
              ;; ref-rename
              (lambda (σ) (make-binding-object
                           (term (#,(bspec/names-r-renamer-name bs/n) ,σ ,v))
