@@ -58,6 +58,7 @@
     [anything-else anything-else]))
 
 
+
 ;; Returns a new `v` with its exported binders (and the things that import them)
 ;; freshened, and the substitution that freshened them. (it is assumed that
 ;; whatever `v` exports is exported to the top level (otherwise,
@@ -79,7 +80,7 @@
          [(list sub-v ...) '()] ;; sequences export nothing
          [(binding-object _ _ nbs _ _) (nbs)]
          [(? symbol? s) `((,s ,s))]
-         [anything-else anything-else]))
+         [anything-else '()]))
 
 
 
