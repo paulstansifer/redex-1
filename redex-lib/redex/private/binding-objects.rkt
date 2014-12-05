@@ -64,7 +64,7 @@
 ;; `noop-binder-subst` is what you want))
 (define (destructure/rec v)
   (match v
-    [(list sub-v ...) `((,sub-v ...) ())] ;; nothing exported
+    [(list sub-v ...) `(,sub-v ())] ;; nothing exported
     [(binding-object _ dr _ _ _) (dr)]
     ;; Exported, so it's a binder.
     [(? symbol? s)
