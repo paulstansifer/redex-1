@@ -59,7 +59,7 @@
                     (surface-bspec->bspec #`(bf-body #:exports #,exports))
                     lang-name
                     (generate-temporary (string-append str-name "-freshen"))
-                    (generate-temporary (string-append str-name "-bnd-freshen"))
+                    (generate-temporary (string-append str-name "-noop-bnd-subst"))
                     (generate-temporary (string-append str-name "-ref-ren"))
                     (generate-temporary (string-append str-name "-bnd-ren"))
                     (generate-temporary (string-append str-name "-pattern-checker"))))
@@ -475,9 +475,7 @@
         , #,(beta->subst-merger (bspec-export-beta bs) renaming-substs/wrapped))
          ;; The necessary `where` clauses to generate the renamings that we'll use
        #,@(bfreshener bfreshening-info (bspec-exported-nts bs))])
- )
-
-
+  )
 
 
 (module+ test
@@ -519,6 +517,35 @@
       (where (,i-ren ,i-σ) ,_)
       (where (,e-ren ,e-σ) ,_)]))
  )
+
+(define (noop-substituter bs/n)
+  (define bs (bspec/names-bs bs/n))
+
+  (define noop-substs
+    (map
+     (lambda (exported-nt) `(,exported-nt
+                             , #`(noop-binder-substitution (term #,exported-nt))))
+     (bspec-exported-nts bs)))
+  
+  #`(define-metafunction #,(bspec/names-lang-name bs/n)
+      [(#,(bspec/names-noop-binder-subst-name bs/n)
+        (variable_binding-form-name . #,(bspec-redex-pattern bs)))
+       , #,(beta->subst-merger (bspec-export-beta bs) noop-substs)]))
+
+(module+ test
+ (check-match
+  (syntax->datum (noop-substituter lambda-bspec/names))
+  `(define-metafunction ,mf-name
+     [(,_ ,bf) (,uq '())])) ;; lambda doesn't export anything
+
+ 
+ (check-match
+  (syntax->datum (noop-substituter ieie-bspec/names))
+  `(define-metafunction ,mf-name
+     [(,_ (,bf-name ,i ,e ,ie ,expr_1 ,expr_2))
+      (,uq (assoc-shadow (noop-binder-substitution (term e))
+                         (noop-binder-substitution (term ie))))])))
+
 
 (module+ test
  (define let*-clause-bspec
@@ -562,6 +589,7 @@
                                (term (#,(bspec/names-freshener-name bs/n) ,v #f)))
                  ;; repack the binding object: its time has not yet come
                  `(,(make-binding-object d/r-v) ,subst)))
+
              ;; noop-binder-subst (returns a σ)
              (lambda ()
                (term (#,(bspec/names-noop-binder-subst-name bs/n) ,v)))
@@ -584,6 +612,7 @@
              (match bs/ns
                     [`((,bf-name ,bs/n) . ,rest)
                      #`(#,(freshener bs/n)
+                        #,(noop-substituter bs/n)
                         #,(reference-renamer bs/n)
                         #,(binder-renamer bs/n)
                         #,(pattern-checker bs/n)

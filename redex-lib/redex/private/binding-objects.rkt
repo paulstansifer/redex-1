@@ -65,13 +65,13 @@
 ;; `noop-binder-subst` is what you want))
 (define (destructure/rec v)
   (match v
-    [(list sub-v ...) `(,sub-v ())] ;; nothing exported
+    [(list sub-v ...) `(,v ())] ;; nothing exported
     [(binding-object _ dr _ _ _) (dr)]
     ;; Exported, so it's a binder.
     [(? symbol? s)
      ;; This gensym is what ultimately does all name freshening:
      (let ((new-s (gensym))) `(,new-s ((,s ,new-s))))]
-    [anything-else `(,anything-else ())]))
+    [anything-else `(,v ())]))
 
 ;; Generate a substitution that doesn't change anything, but whose
 ;; range is all the binders in `v`
