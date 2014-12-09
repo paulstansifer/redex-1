@@ -50,7 +50,8 @@ See match-a-pattern.rkt for more details
          "underscore-allowed.rkt"
          "match-a-pattern.rkt"
          "lang-struct.rkt"
-         "enum.rkt")
+         "enum.rkt"
+         (only-in "binding-objects.rkt" destructure))
 
 (define-struct compiled-pattern (cp binds-names? skip-dup-check?) #:transparent)
 
@@ -805,11 +806,13 @@ See match-a-pattern.rkt for more details
        (define has-hole? (hash-ref has-hole-or-hide-hole-ht nt))
        (values
         (if has-hole?
-            (λ (exp hole-info nesting-depth)
+            (λ (possibly-binding-object-exp hole-info nesting-depth)
+              (define exp (destructure possibly-binding-object-exp))
               (match-nt (hash-ref clang-list-ht nt)
                         (hash-ref clang-ht nt)
                         nt exp hole-info))
-            (λ (exp)
+            (λ (possibly-binding-object-exp)
+              (define exp (destructure possibly-binding-object-exp))
               (match-nt/boolean
                (hash-ref clang-list-ht nt)
                (hash-ref clang-ht nt)
@@ -951,12 +954,14 @@ See match-a-pattern.rkt for more details
        (values
         (cond
           [(not (or any-has-hole? any-has-hide-hole? (not (null? names))))
-           (λ (exp)
+           (λ (possibly-binding-object-exp)
+             (define exp (destructure possibly-binding-object-exp))
              (cond
                [(list? exp) (match-list/boolean rewritten exp)]
                [else #f]))]
           [(= 0 repeats)
-           (λ (exp hole-info nesting-depth)
+           (λ (possibly-binding-object-exp hole-info nesting-depth)
+             (define exp (destructure possibly-binding-object-exp))
              (cond
                [(list? exp)
                 ;; shortcircuit: if the list isn't the right length, give up immediately.
@@ -965,7 +970,8 @@ See match-a-pattern.rkt for more details
                     #f)]
                [else #f]))]
           [else
-           (λ (exp hole-info nesting-depth)
+           (λ (possibly-binding-object-exp hole-info nesting-depth)
+             (define exp (destructure possibly-binding-object-exp))
              (cond
                [(list? exp)
                 ;; shortcircuit: if the list doesn't have the right number of
