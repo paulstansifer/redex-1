@@ -629,15 +629,8 @@
 
 
 ) ;; begin-for-syntax
-;; Now, we're in phase 0:
 
-;; === Runtime utility functions ===
-
-;; Turns a renaming into a no-op renaming that affects the same names.
-;; Useful to "reserve" spots for names that are non-free, but imported
-(define (smash-substitution σ)
-  (map (lambda (pair) `(,(car pair) ,(car pair))) σ))
-
+;; === Runtime utility function ===
 
 (define (assoc-shadow lst-primary lst-secondary)
   (append lst-primary
@@ -645,13 +638,7 @@
                   lst-secondary)))
 
 
-#| Sadly tests aren't available at this phase
 
- (module+ test
-  (check-equal? (assoc-shadow '((a 1) (b 2) (c 3) (d 4))
-                              '((e 5) (a 99) (b 999) (f 6) (g 7) (d 9999)))
-                '((a 1) (b 2) (c 3) (d 4) (e 5) (f 6) (g 7))))
-|#
 
 ;; TODO: worry about things like `(rib a_!_1)`
 
