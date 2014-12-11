@@ -11,15 +11,20 @@
 ;; These tests properly belong in binding-forms.rkt, but they need
 ;; to take place in a different phase.
 (module+ test
+
+ ;; This quick hack defines the necessary metafunctions,
+ ;; and it defines a binding object construction function
+ ;; for each binding form, naming it after that form.
  (define-syntax test-binding-forms setup-binding-forms)
 
+ 
  (define-language my-lambda-calc
    (e (e e)
       (my-lambda (x) e)
       x)
    (x variable-not-otherwise-mentioned))
 
- 
+ ;; So this defines `my-lambda` to be a binding constructor
  (test-binding-forms
   ((my-lambda (x) e #:refers-to x))
   my-lambda-calc)
@@ -28,8 +33,10 @@
  
 
  (check-match (destructure id)
-              `(my-lambda (,x) ,x))
- 
+              `(my-lambda (,x) ,x) ;; structure was preserved
+              (not (eq? x 'x))) ;; we actually freshened the name
+
+
 
  (define-language let*-language
    (e (e e)
@@ -37,18 +44,20 @@
       x
       number)
    (x variable-not-otherwise-mentioned)
-   (clauses (clause x e clauses)
+   (clauses (cl x e clauses)
             ()))
-
+ 
+ ;; In addition to exports, this tests destructuring.
+ ;; Being able to write `clauses` instead of `any` in the binding form definition
+ ;; relies on `redex-match` being able to recognize the opaque binding object
+ ;; as something that matches the pattern `(cl x e clauses)`.
  (test-binding-forms
-  ((clause x e clauses #:refers-to x) #:exports (shadow clauses x)
+  ((cl x e clauses #:refers-to x) #:exports (shadow clauses x)
    (my-let* clauses e #:refers-to clauses))
   let*-language)
 
  (define basic-clauses
-   (clause `(clause a 4
-                    ,(clause `(clause b (a 5)
-                                      ,(clause `(clause c (b (a 6)) ())))))))
+   (cl `(cl a 4 ,(cl `(cl b (a 5) ,(cl `(cl c (b (a 6)) ())))))))
  
  (define basic-let* (my-let* `(my-let* ,basic-clauses (a (b c)))))
 
@@ -63,15 +72,15 @@
 
  (check-match 
   (totally-destructure basic-let*)
-  `(my-let* (clause ,a 4 (clause ,b (,a 5) (clause ,c (,b (,a 6)) ())))
+  `(my-let* (cl ,a 4 (cl ,b (,a 5) (cl ,c (,b (,a 6)) ())))
             (,a (,b ,c))))
 
  ;; check that shadowing works properly
  (check-match
   (totally-destructure
-   (my-let* `(my-let* ,(clause `(clause a 1 ,(clause `(clause a a ()))))
+   (my-let* `(my-let* ,(cl `(cl a 1 ,(cl `(cl a a ()))))
                       a)))
-  `(my-let* (clause ,a 1 (clause ,b ,a ()))
+  `(my-let* (cl ,a 1 (cl ,b ,a ()))
             ,b)
   (not (equal? a b)))
 
@@ -97,4 +106,20 @@
   `(let3* ((,a 1) (,b ,a) (,c (,a ,b)))
           (,a (,b ,c))))
 
+
+
+ ;; `...` in beta. Doesn't work yet
+ #|
+ (define-language variable-arity-lambda-calc
+   (e (e e)
+      (va-lambda (x) e)
+      x)
+   (x variable-not-otherwise-mentioned))
+
+ 
+ (test-binding-forms
+  ((va-lambda (x ...) e #:refers-to (rib x ...)))
+  variable-arity-lambda-calc)
+ |#
+ 
  )
