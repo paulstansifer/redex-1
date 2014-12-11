@@ -1,8 +1,12 @@
 #lang racket
 
+
+;; These are to put markers inside Redex values
+(define shadow-sym (gensym 'shadow))
+(define rib-sym (gensym 'rib))
+
 (begin-for-syntax ;; this covers most of the file; let's not indent
- (require racket)
- (require trace)
+(require racket)
 (require (for-template "binding-objects.rkt"))
 (require (for-template "reduction-semantics.rkt"))
 (require (for-template (only-in "term.rkt" term)))
@@ -28,7 +32,6 @@
 (define-syntax (shadow stx) (raise-syntax-error 'shadow "used outside of binding specification"))
 (define-syntax (rib stx) (raise-syntax-error 'rib "used outside of binding specification"))
 (define-syntax (nothing stx) (raise-syntax-error 'nothing "used outside of binding specification"))
-
 
 (struct import/internal (body beta) #:transparent)
 
@@ -300,6 +303,9 @@
      [(,_ ((,v-f ,v-t) ,_) (,bf-name (x) expr))
       (,bf-name . ,_)])))
 
+;; TODO: this also seems to fire if the binding form doesn't match
+;; the corresponding pattern in the language. A great thing to test...
+;; but I don't know how it's being tested
 (define (pattern-checker bs/n)
   (define bs (bspec/names-bs bs/n))
   #`(define-metafunction #,(bspec/names-lang-name bs/n)
@@ -316,49 +322,44 @@
 
 ;; === Beta handling ===
 
-
 ;; Given a beta...
 ;; ...produces a metafunction body that merges substitutions in a way that
-;; respects the beta's shadowing
-;; (corresponds to 〚β〛(σ…) in the paper)
-(define (beta->subst-merger beta map-of-renamings)
-  (let loop ([beta beta])
-    (syntax-case beta (shadow rib nothing)
-      [nothing #`'()]
-      ;; TODO: where do we check for erroneously-having-the-same-names-in-a-rib?
-      [(rib) #`'()]
-      [(rib sub-beta) (loop #`sub-beta)]
-      [(rib sub-beta . sub-betas)
-       #`(append #,(loop #`sub-beta)
-                 #,(loop #`(rib . sub-betas)))]
-      [(shadow) #`'()]
-      [(shadow sub-beta) (loop #`sub-beta)]
-      [(shadow sub-beta . sub-betas)
-       #`(assoc-shadow #,(loop #`sub-beta)
-                       #,(loop #`(shadow . sub-betas)))]
-      [nt-ref (cadr (name-assoc #`nt-ref map-of-renamings))])))
+;; respects the beta's shadowing.
+;; `renaming-info` indicates what to substitute the nonterminal references with.
+;; Only the substitution is used; the name of the bfreshened value is ignored
+;; (along with `interp-beta`, this corresponds to 〚β〛(σ…) in the paper)
+(define (beta->subst-merger beta renaming-info)
+  (define body
+    (let loop ([beta beta])
+      (syntax-case beta (shadow rib nothing ...)
+        [nothing #`()] ;; empty literal substitution
+        [(rib . sub-betas) #`(,rib-sym #,@(map loop (syntax->list #`sub-betas)))]
+        [(shadow . sub-betas) #`(,shadow-sym #,@(map loop (syntax->list #`sub-betas)))]
+        [(... ...) #`(... ...)]
+        [nt-ref (caddr (name-assoc #`nt-ref renaming-info))])))
+  #`(interp-beta (term #,body)))
 
 (module+ test
-
   (check-equal?
    (syntax->datum (beta->subst-merger #'nothing '()))
-   ''())
-         
-  ;; ideally, we'd do bound-identifier=?, but we're not worried about
-  ;; that failure mode
+   `(interp-beta (term ())))
 
-  (check-equal?
+  (check-match
+   (syntax->datum (beta->subst-merger #'(rib a (shadow a a)) `((,#'a 0 ,#'((x xx))))))
+   `(interp-beta (term (,r ((x xx)) (,s ((x xx)) ((x xx))))))
+   (and (equal? r '(unquote rib-sym)) (equal? s '(unquote shadow-sym))))
+
+  (check-match
    (syntax->datum
-    (beta->subst-merger #'(rib (shadow (rib a b (rib) (shadow))
-                                       (rib c d) nothing (shadow e f))
-                               g h)
-                        `((,#'a A) (,#'b B) (,#'c C) (,#'d D) (,#'e E) (,#'f F) (,#'g G) (,#'h H))))
-   '(append (assoc-shadow (append A (append B (append '() '())))
-                          (assoc-shadow
-                           (append C D)
-                           (assoc-shadow
-                            '() (assoc-shadow E F))))
-            (append G H))))
+    (beta->subst-merger
+     #'(rib (shadow (rib a b (... ...) (rib) (shadow)) (rib c d) nothing (shadow e f))
+            g h)
+     `((,#'a 0 A) (,#'b 0 B) (,#'c 0 C) (,#'d 0 D)
+       (,#'e 0 E) (,#'f 0 F) (,#'g 0 G) (,#'h 0 H))))
+   `(interp-beta (term (,r (,s (,r A B ,ddd (,r) (,s)) (,r C D) () (,s E F)) G H)))
+   (eq? ddd '...)))
+
+ 
 
 
 
@@ -368,10 +369,8 @@
 ;; Every import needs to be renamed according to the sets of binders it imports
 
 
-;; bfreshening-info is an assoc:
-;; (list (list identifier identifier-for-bfreshened-version renaming) ...)
 ;; exported-nts is a list of nonterminals
-(define (bfreshener bfreshening-info exported-nts)
+(define (bfreshener renaming-info exported-nts)
   (map
    (match-lambda
     [`(,mentioned-nt ,bfreshened ,vpat)
@@ -387,7 +386,7 @@
                           ;; to participate in shadowing correctly
                           ;; without changing anything
                           ,(noop-binder-substitution (term #,mentioned-nt))))))])
-   bfreshening-info))
+   renaming-info))
 
 (module+ test
  (check-equal? (map syntax->datum (bfreshener
@@ -403,22 +402,15 @@
                              (destructure/rec (term b2))
                              (term (b2 ,(noop-binder-substitution (term b2)))))))))
 
-;; TODO: when we rename binders, we also need to rename all names bound to them 
-;; in the terms that export them!
-
-(define (freshener bs/n)
-  (define bs (bspec/names-bs bs/n))
-
-  (define mentioned-nts (bspec-all-mentioned-nts bs))
-
-  ;; An assoc mapping nonterminal references (that have been imported)
-  ;; to their freshened version and to the names of the renamings that
-  ;; need to be applied.
-  ;; Complicating matters, we can't name the renaming as a whole
-  ;; (we don't know what Redex language we're in), so we need to
-  ;; call the renaming by a pattern like `((variable_from-98 variable_to-98) ...)' 
-  (define bfreshening-info
-    (map
+;; renaming-info is an assoc mapping nonterminal references
+;; to their freshened version and to the names of the renamings that
+;; need to be applied.
+;; Complicating matters, we can't name the renaming as a whole
+;; (we don't know what Redex language we're in), so we need to
+;; call the renaming by a pattern like `((variable_from-98 variable_to-98) ...)' 
+;; (list (list identifier identifier-for-bfreshened-version renaming) ...)
+(define (make-renaming-info mentioned-nts)
+  (map
      (lambda (mentioned-nt-stx)
        (define s (symbol->string (syntax->datum mentioned-nt-stx)))
        `(,mentioned-nt-stx
@@ -428,26 +420,33 @@
          ,#`((#,(generate-temporary (string-append "variable_from" s))
               #,(generate-temporary (string-append "variable_to" s))) (... ...))))
      mentioned-nts))
+
+;; TODO: when we rename binders, we also need to rename all names bound to them 
+;; in the terms that export them!
+
+(define (freshener bs/n)
+  (define bs (bspec/names-bs bs/n))
+
+  ;; An assoc mapping nonterminal references (that have been imported)
+  ;; to their freshened version and to the names of the renamings that
+  ;; need to be applied.
+  ;; Complicating matters, we can't name the renaming as a whole
+  ;; (we don't know what Redex language we're in), so we need to
+  ;; call the renaming by a pattern like `((variable_from-98 variable_to-98) ...)' 
+  (define renaming-info (make-renaming-info (bspec-all-mentioned-nts bs)))
  
-
-  ;; will be spliced into (unquote ...)ed bits of the RHS; we need `term`
-  (define renaming-substs/wrapped
-    (map (match-lambda [`(,nt ,bfreshened ,r-pat)
-                        `(,nt ,#`(term #,r-pat))])
-         bfreshening-info))
-
   (define transcriber
     (let loop [(body (bspec-body bs))]
       (match body
         [`() #`()]
         [(import/internal body-sub beta)
-         #`,(rename-references #,(beta->subst-merger beta renaming-substs/wrapped)
+         #`,(rename-references #,(beta->subst-merger beta renaming-info)
                                (term #,(loop body-sub)))]
         [`(,body-sub . ,rest-of-body)
          #`(#,(loop body-sub) . #,(loop rest-of-body))]
         [nt
          (match
-          (name-assoc nt bfreshening-info)
+          (name-assoc nt renaming-info)
           [`(,_ ,bfreshened-version-of-nt ,_) bfreshened-version-of-nt]
           [#f
            #`,(if (symbol? (term #,nt)) 
@@ -472,9 +471,9 @@
         (variable_binding-form-name . #,(bspec-redex-pattern bs)) any_top-level?)
        ((variable_binding-form-name . #,transcriber) ;; new version of argument
         ;; subst that higher level forms should be consistent with:
-        , #,(beta->subst-merger (bspec-export-beta bs) renaming-substs/wrapped))
+        , #,(beta->subst-merger (bspec-export-beta bs) renaming-info))
          ;; The necessary `where` clauses to generate the renamings that we'll use
-       #,@(bfreshener bfreshening-info (bspec-exported-nts bs))])
+       #,@(bfreshener renaming-info (bspec-exported-nts bs))])
   )
 
 
@@ -489,12 +488,12 @@
       ((,bf-name
         (,x-bfreshened)
         (,uq (rename-references
-              (term ,x-σ)
+              (interp-beta (term ,x-σ))
               (term
                (,uq (if (symbol? (term expr))
                         (term expr)
                         (first (destructure/rec (term expr)))))))))
-       (,uq '()))
+       (,uq (interp-beta (term ()))))
       (where (,x-bfreshened ,x-σ)
              (,uq (if (xor #f (term any_top-level?))
                       (destructure/rec (term x))
@@ -502,17 +501,17 @@
  
  (check-match
   (syntax->datum (freshener ieie-bspec/names))
-  `(define-metafunction ,mf-name
+  `(define-metafunction ,_
      [(,_ (,bf-name ,i ,e ,ie ,expr_1 ,expr_2) any_top-level?)
       ((,bf-name
         ,i-ren
         ,e-ren
         ,ie-ren
         (,uq (rename-references
-              (assoc-shadow (term ,ie-σ) (term ,i-σ)) ,_))
+              (interp-beta (term (,shad ,ie-σ ,i-σ))) ,_))
         (,uq (rename-references
-              (assoc-shadow (term ,i-σ) (term ,ie-σ)) ,_)))
-       (,uq (assoc-shadow (term ,e-σ) (term ,ie-σ))))
+              (interp-beta (term (,shad ,i-σ ,ie-σ))) ,_)))
+       (,uq (interp-beta (term (,shad ,e-σ ,ie-σ)))))
       (where (,ie-ren ,ie-σ) ,_)
       (where (,i-ren ,i-σ) ,_)
       (where (,e-ren ,e-σ) ,_)]))
@@ -521,30 +520,34 @@
 (define (noop-substituter bs/n)
   (define bs (bspec/names-bs bs/n))
 
-  (define noop-substs
+  (define renaming-info (make-renaming-info (bspec-exported-nts bs)))
+
+  (define where-σs
     (map
-     (lambda (exported-nt) `(,exported-nt
-                             , #`(noop-binder-substitution (term #,exported-nt))))
-     (bspec-exported-nts bs)))
-  
+     (match-lambda
+      [`(,nt ,_ ,σ) #`(where #,σ ,(noop-binder-substitution (term #,nt)))])
+     renaming-info))
+
   #`(define-metafunction #,(bspec/names-lang-name bs/n)
       [(#,(bspec/names-noop-binder-subst-name bs/n)
         (variable_binding-form-name . #,(bspec-redex-pattern bs)))
-       , #,(beta->subst-merger (bspec-export-beta bs) noop-substs)]))
+       , #,(beta->subst-merger (bspec-export-beta bs) renaming-info)
+         #,@where-σs]))
 
 (module+ test
  (check-match
   (syntax->datum (noop-substituter lambda-bspec/names))
   `(define-metafunction ,mf-name
-     [(,_ ,bf) (,uq '())])) ;; lambda doesn't export anything
+     [(,_ ,bf) (,uq (interp-beta (term ())))])) ;; lambda doesn't export anything
 
  
  (check-match
   (syntax->datum (noop-substituter ieie-bspec/names))
   `(define-metafunction ,mf-name
      [(,_ (,bf-name ,i ,e ,ie ,expr_1 ,expr_2))
-      (,uq (assoc-shadow (noop-binder-substitution (term e))
-                         (noop-binder-substitution (term ie))))])))
+      (,uq (interp-beta (term (,shadow ,e-σ ,ie-σ))))
+      (where ,e-σ (,uq (noop-binder-substitution (term ,e))))
+      (where ,ie-σ (,uq (noop-binder-substitution (term ,ie))))])))
 
 
 (module+ test
@@ -632,12 +635,25 @@
 
 ;; === Runtime utility function ===
 
-(define (assoc-shadow lst-primary lst-secondary)
-  (append lst-primary
-          (filter (lambda (elt) (not (assoc (car elt) lst-primary)))
-                  lst-secondary)))
+(define (assoc-shadow . lsts)
+  (match lsts
+    [`() `()]
+    [`(,lst-primary . ,lst-rest)
+     (append lst-primary
+             (filter (lambda (elt) (not (assoc (car elt) lst-primary)))
+                     (apply assoc-shadow lst-rest)))]))
 
-
+;; Takes a redex value (an "expanded beta") with `shadow-sym`s, etc., and interprets it.
+;; (Expaned betas are produced by `beta->subst-merger`).
+;; Returns a substitution.
+(define (interp-beta expanded-beta)
+  (match expanded-beta
+    [`(,first . ,rest)
+     (cond [(eq? first shadow-sym) (apply assoc-shadow (map interp-beta rest))]
+           [(eq? first rib-sym) (apply append (map interp-beta rest))]
+           [else expanded-beta])] ;; we've hit a plain substitution
+    [`() `()]
+    [atom (redex-error #f "Unexpected term found in an expanded beta: ~s" atom)]))
 
 
 ;; TODO: worry about things like `(rib a_!_1)`

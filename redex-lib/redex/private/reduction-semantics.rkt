@@ -2004,7 +2004,9 @@
        (unless (identifier? (syntax name))
          (raise-syntax-error 'define-extended-language "expected an identifier" stx #'name))
        (unless (identifier? (syntax orig-lang))
-         (raise-syntax-error 'define-extended-language "expected an identifier" stx #'orig-lang))
+               (raise-syntax-error 'define-extended-language "expected an identifier" stx #'orig-lang))
+
+       ;; PS: actually use bf-defs
        (define-values (nt-defs bf-defs) (split-def-lang-defs #'defs))
        (let ([old-names (language-id-nts #'orig-lang 'define-extended-language)]
              [non-terms (parse-non-terminals nt-defs stx)])

@@ -31,9 +31,9 @@
               `(my-lambda (,x) ,x))
  
 
- (define-language more-complex-language
+ (define-language let*-language
    (e (e e)
-      (my-let* any e)
+      (my-let* clauses e)
       x
       number)
    (x variable-not-otherwise-mentioned)
@@ -43,7 +43,7 @@
  (test-binding-forms
   ((clause x e clauses #:refers-to x) #:exports (shadow clauses x)
    (my-let* clauses e #:refers-to clauses))
-  more-complex-language)
+  let*-language)
 
  (define basic-clauses
    (clause `(clause a 4
@@ -64,5 +64,37 @@
  (check-match 
   (totally-destructure basic-let*)
   `(my-let* (clause ,a 4 (clause ,b (,a 5) (clause ,c (,b (,a 6)) ())))
-            (,a (,b ,c)))) 
+            (,a (,b ,c))))
+
+ ;; check that shadowing works properly
+ (check-match
+  (totally-destructure
+   (my-let* `(my-let* ,(clause `(clause a 1 ,(clause `(clause a a ()))))
+                      a)))
+  `(my-let* (clause ,a 1 (clause ,b ,a ()))
+            ,b)
+  (not (equal? a b)))
+
+ (define-language let3*-language
+   (e (e e)
+      x
+      number
+      (let3* ((x_a e_a) (x_b e_b) (x_c e_c)) e_body))
+   (x variable-not-otherwise-mentioned))
+
+
+ ;; a bigger, complexer form
+ (test-binding-forms
+  ((let3*
+    ((x_a e_a) (x_b e_b #:refers-to x_a) (x_c e_c #:refers-to (shadow x_b x_a)))
+    e_body #:refers-to (shadow x_c x_b x_a)))
+  let3*-language)
+
+ (check-match
+  (totally-destructure
+   (let3* `(let3* ((a 1) (b a) (c (a b)))
+                  (a (b c)))))
+  `(let3* ((,a 1) (,b ,a) (,c (,a ,b)))
+          (,a (,b ,c))))
+
  )
