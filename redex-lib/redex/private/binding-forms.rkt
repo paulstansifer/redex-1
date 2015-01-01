@@ -282,15 +282,16 @@
                         (rename-references (term #,σ) (term #,atom)))
                 #`,(rename-references (term #,σ) (term #,atom)))])))
 
-(define (reference-renamer bs/n)
+(define (reference-renamer bs/n σ-name v-name)
   (define bs (bspec/names-bs bs/n))
   ;; We want a Redex `...`, not a #` one
-  (define σ #`((variable_from variable_to) (... ...)))
-  
-  #`(define-metafunction #,(bspec/names-lang-name bs/n)
-      [(#,(bspec/names-r-renamer-name bs/n)  #,σ
-        (variable_binding-form-name . #,(bspec-redex-pattern bs)))
-       (variable_binding-form-name . #,(reference-renamer-transcriber σ bs))]))
+  (define σ-term #`((variable_from variable_to) (... ...)))
+
+  #`(redex-let #,(bspec/names-lang-name bs/n)
+      ([#,σ-term #,σ-name]
+       [(variable_binding-form-name . #,(bspec-redex-pattern bs)) #,v-name])
+    (term (variable_binding-form-name
+           . #,(reference-renamer-transcriber σ-term bs)))))
 
 
 (define (binder-renamer-transcriber σ bs)
@@ -305,17 +306,16 @@
                        (term #,atom))
                 atom)])))
 
-(define (binder-renamer bs/n)
+(define (binder-renamer bs/n σ-name v-name)
   (define bs (bspec/names-bs bs/n))
   ;; We want a Redex `...`, not a #` one
-  (define σ-redex-repr #`((variable_from variable_to) (... ...)))
+  (define σ-term #`((variable_from variable_to) (... ...)))
 
-  #`(lambda (σ v)
-      (redex-let #,(bspec/names-lang-name bs/n)
-        ([#,σ-redex-repr σ]
-         [(variable_binding-form-name . #,(bspec-redex-pattern bs)) v])
-        (term (variable_binding-form-name
-               . #,(binder-renamer-transcriber σ-redex-repr bs))))))
+  #`(redex-let #,(bspec/names-lang-name bs/n)
+      ([#,σ-term #,σ-name]
+       [(variable_binding-form-name . #,(bspec-redex-pattern bs)) #,v-name])
+      (term (variable_binding-form-name
+             . #,(binder-renamer-transcriber σ-term bs)))))
 
 
 
@@ -325,11 +325,7 @@
   '((,(if (symbol? (term x)) (term x) (rename-references (term σ) (term x))))
      ,(rename-references (term σ) (term expr))))
 
- (check-match
-  (syntax->datum (reference-renamer lambda-bspec/names))
-  `(define-metafunction ,_
-     [(,_ ((,v-f ,v-t) ,_) (,bf-name (x) expr))
-      (,bf-name . ,_)])))
+ )
 
 ;; TODO: this also seems to fire if the binding form doesn't match
 ;; the corresponding pattern in the language. A great thing to test...
@@ -657,13 +653,9 @@
              (lambda ()
                (term (#,(bspec/names-noop-binder-subst-name bs/n) ,v)))
              ;; ref-rename
-             (lambda (σ) (make-binding-object
-                          (term (#,(bspec/names-r-renamer-name bs/n) ,σ ,v))
-                          #f))
+             (lambda (σ) (make-binding-object #,(reference-renamer bs/n #`σ #`v) #f))
              ;; bnd-rename
-             (lambda (σ) (make-binding-object
-                          (#,(binder-renamer bs/n) σ v)
-                          #f))))))
+             (lambda (σ) (make-binding-object #,(binder-renamer bs/n #`σ #`v) #f))))))
       make-binding-object))
 
 
@@ -676,8 +668,6 @@
                     [`((,bf-name ,bs/n) . ,rest)
                      #`(#,(freshener bs/n)
                         #,(noop-substituter bs/n)
-                        #,(reference-renamer bs/n)
-                        #,(binder-renamer bs/n)
                         #,(pattern-checker bs/n)
                         ;; TODO: do we really want the constructors to have the
                         ;; name of their binding form? It *is* sort of the
