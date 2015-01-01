@@ -283,11 +283,14 @@
 (define (binder-renamer bs/n)
   (define bs (bspec/names-bs bs/n))
   ;; We want a Redex `...`, not a #` one
-  (define σ #`((variable_from variable_to) (... ...)))
-  #`(define-metafunction #,(bspec/names-lang-name bs/n)
-      [(#,(bspec/names-b-renamer-name bs/n)  #,σ
-        (variable_binding-form-name . #,(bspec-redex-pattern bs)))
-       (variable_binding-form-name . #,(binder-renamer-transcriber σ bs))]))
+  (define σ-redex-repr #`((variable_from variable_to) (... ...)))
+
+  #`(lambda (σ v)
+      (redex-let #,(bspec/names-lang-name bs/n)
+        ([#,σ-redex-repr σ]
+         [(variable_binding-form-name . #,(bspec-redex-pattern bs)) v])
+        (term (variable_binding-form-name
+               . #,(binder-renamer-transcriber σ-redex-repr bs))))))
 
 
 
@@ -602,7 +605,7 @@
                           #f))
              ;; bnd-rename
              (lambda (σ) (make-binding-object
-                          (term (#,(bspec/names-b-renamer-name bs/n) ,σ ,v))
+                          (#,(binder-renamer bs/n) σ v)
                           #f))))))
       make-binding-object))
 
