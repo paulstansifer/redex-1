@@ -12,6 +12,7 @@
 (require (for-template (only-in "term.rkt" term)))
 (require (for-template (only-in "matcher.rkt" caching-enabled?)))
 (require (for-template "error.rkt"))
+(require "error.rkt")
 (require (only-in racket/syntax generate-temporary))
 
 (provide parse-binding-forms
@@ -112,8 +113,7 @@
                (append bspec (list (loop #'sbspec-sub '()))))]
         [atomic-pattern #'atomic-pattern])))
 
-  ;; strip the extra stuff; generate a redex pattern that just matches
-  ;; the 
+  ;; strip the extra import stuff; generate a plain redex pattern 
   (define redex-pattern
     (let loop [(bpat body)]
       (match bpat
@@ -122,7 +122,7 @@
              [atom atom])))
   
   (define import-names (names-mentioned-in-bspec sbody))
-  (define export-names (names-mentioned-in-beta export-beta))
+  (define export-names (names-mentioned-in-beta export-beta 0))
 
   (bspec body redex-pattern export-beta import-names export-names
          (dedupe-names (append import-names export-names))))
@@ -156,7 +156,7 @@
  (check-equal?
   (desyntax-bspec lambda-bspec)
   (bspec `((x) ,(import/internal 'expr 'x))
-         `((x) expr) 'nothing '(x) '() '(x)))
+         `((x) expr) 'nothing '((x 0)) '() '((x 0))))
  
  (check-equal?
   (desyntax-bspec (surface-bspec->bspec
@@ -166,7 +166,7 @@
   (bspec `(a b ,(import/internal `(c ,(import/internal `d `h) e)
                                  `(shadow e b (rib nothing))) f g h)
          `(a b (c d e) f g h)
-         `(rib e f) `(h e b) `(e f) `(h e b f)))
+         `(rib e f) `((h 0) (e 0) (b 0)) `((e 0) (f 0)) `((h 0) (e 0) (b 0) (f 0))))
 
 
 
@@ -181,68 +181,93 @@
  
  )
 
+(define (name-assoc n lst)
+  (assf (lambda (x) (bound-identifier=? x n)) lst))
 
 (define (boolify v)
   (if v #t #f))
 
+
+
+;; When these functions talk about names, they mean assocs from names to numbers
+;; (the number being how many `...`s the name is underneath)
+
 (define (dedupe-names lst)
-  (remove-duplicates lst bound-identifier=?))
+  (remove-duplicates
+   lst
+   (match-lambda*
+    [`((,id-a ,depth-a) (,id-b ,depth-b))
+     (if (bound-identifier=? id-a id-b)
+         (if (= depth-a depth-b)
+             #t
+             (redex-error #f "Same name used at two different ... depths: ~s (depth ~s) vs. ~s (depth ~s)"
+                          id-a depth-a id-b depth-b))
+         #f)])))
 
-(define (has-name? lst n)
-  (memf (lambda (x) (bound-identifier=? x n)) lst))
 
-(define (name-assoc n lst)
-  (assf (lambda (x) (bound-identifier=? x n)) lst))
+(define (has-name? lst n) ;; second is the depth
+  (memf (lambda (x) (bound-identifier=? (first x) n)) lst))
 
 ;; TODO: this is handling syntax; maybe it should be vanilla data?
-(define (names-mentioned-in-beta beta)
-  (dedupe-names (names-mentioned-in-beta/rec beta)))
+(define (names-mentioned-in-beta beta depth)
+  (dedupe-names (names-mentioned-in-beta/rec beta depth)))
 
-(define (names-mentioned-in-beta/rec beta)
-  (syntax-case beta (nothing)
+(define (names-mentioned-in-beta/rec beta depth)
+  (syntax-case beta (nothing ...)
     [nothing '()]
-    [(op . betas)
-     (append* (map names-mentioned-in-beta/rec (syntax->list #'betas)))]
-    [name (list #'name)]))
+    [(op beta (... ...) . betas)
+     (append (names-mentioned-in-beta/rec #'beta (+ depth 1))
+             (names-mentioned-in-beta/rec #'(op . betas) depth))]
+    [(op beta . betas)
+     (append (names-mentioned-in-beta/rec #'beta depth)
+             (names-mentioned-in-beta/rec #'(op . betas) depth))]
+    [(op) '()]
+    [name `((,#'name ,depth))]))
 
 ;; TODO: this is handling surface bspecs; it should get normal bspecs
-(define (names-mentioned-in-bspec/rec bspec)
-  (syntax-case bspec ()
+(define (names-mentioned-in-bspec/rec bspec depth)
+  (syntax-case bspec (...)
     [() '()]
+    [(bspec-sub (... ...) . rest)
+     (append (names-mentioned-in-bspec/rec #'bspec-sub (+ depth 1))
+             (names-mentioned-in-bspec/rec #'rest depth))]
+    [(bspec-sub #:refers-to beta (... ...) . rest)
+     (append (names-mentioned-in-bspec/rec #'bspec-sub (+ depth 1))
+             (names-mentioned-in-beta #'beta (+ depth 1))
+             (names-mentioned-in-bspec/rec #'rest depth))]
     [(bspec-sub #:refers-to beta . rest)
-     (append (names-mentioned-in-bspec/rec #'bspec-sub)
-             (names-mentioned-in-beta #'beta)
-             (names-mentioned-in-bspec/rec #'rest))]
+     (append (names-mentioned-in-bspec/rec #'bspec-sub depth)
+             (names-mentioned-in-beta #'beta depth)
+             (names-mentioned-in-bspec/rec #'rest depth))]
     [(bspec-sub . rest)
-     (append (names-mentioned-in-bspec/rec #'bspec-sub)
-             (names-mentioned-in-bspec/rec #'rest))]
+     (append (names-mentioned-in-bspec/rec #'bspec-sub depth)
+             (names-mentioned-in-bspec/rec #'rest depth))]
     [plain '()]))
 
 (define (names-mentioned-in-bspec bspec)
-  (dedupe-names (names-mentioned-in-bspec/rec bspec)))
+  (dedupe-names (names-mentioned-in-bspec/rec bspec 0)))
 
 (module+
  test
 
- (define (ds-lst lst) (map syntax->datum lst))
+ (define (ds-lst lst) (map (match-lambda [`(,x ,depth)
+                                          `(,(syntax->datum x) ,depth)]) lst))
  
- (check-equal? (ds-lst (names-mentioned-in-beta #'a)) '(a))
- (check-equal? (ds-lst (names-mentioned-in-beta #'(shadow (rib a b c) (shadow b c d e)
+ (check-equal? (ds-lst (names-mentioned-in-beta #`a 0)) `((a 0)))
+ (check-equal? (ds-lst (names-mentioned-in-beta #`(shadow (rib a b c) (shadow b c d e)
                                                           (rib f nothing g h a a a) b
-                                                          nothing nothing)))
-               '(a b c d e f g h))
+                                                          nothing nothing) 0))
+               (map (lambda (x) `(,x 0)) `(a b c d e f g h)))
 
- (check-equal? (ds-lst (names-mentioned-in-bspec #'((x) e #:refers-to x))) '(x))
- (check-equal? (ds-lst (names-mentioned-in-bspec #'((x) e))) '())
- (check-equal? (ds-lst (names-mentioned-in-bspec #'(x_11
+ (check-equal? (ds-lst (names-mentioned-in-bspec #`((x) e #:refers-to x))) `((x 0)))
+ (check-equal? (ds-lst (names-mentioned-in-bspec #`((x) e))) `())
+ (check-equal? (ds-lst (names-mentioned-in-bspec #`(x_11
                                                     e_1 #:refers-to (shadow x_2 x_444)
                                                     (x_22 x_33 #:refers-to (rib x_1 x_2)
                                                           (e_2 e_3 #:refers-to (rib x_9))
                                                           #:refers-to x_3))))
-               '(x_2 x_444 x_1 x_9 x_3))
+               (map (lambda (x) `(,x 0)) `(x_2 x_444 x_1 x_9 x_3)))
  )
-
-
 
 
 (define (reference-renamer-transcriber σ bs)
@@ -348,7 +373,7 @@
    `(interp-beta (term ())))
 
   (check-match
-   (syntax->datum (beta->subst-merger #'(rib a (shadow a a)) `((,#'a 0 ,#'((x xx))))))
+   (syntax->datum (beta->subst-merger #'(rib a (shadow a a)) `((,#'a - ,#'((x xx))))))
    `(interp-beta (term (,r ((x xx)) (,s ((x xx)) ((x xx))))))
    (and (equal? r '(unquote rib-sym)) (equal? s '(unquote shadow-sym))))
 
@@ -357,8 +382,8 @@
     (beta->subst-merger
      #'(rib (shadow (rib a b (... ...) (rib) (shadow)) (rib c d) nothing (shadow e f))
             g h)
-     `((,#'a 0 A) (,#'b 0 B) (,#'c 0 C) (,#'d 0 D)
-       (,#'e 0 E) (,#'f 0 F) (,#'g 0 G) (,#'h 0 H))))
+     `((,#'a - A) (,#'b - B) (,#'c - C) (,#'d - D)
+       (,#'e - E) (,#'f - F) (,#'g - G) (,#'h - H))))
    `(interp-beta (term (,r (,s (,r A B ,ddd (,r) (,s)) (,r C D) () (,s E F)) G H)))
    (eq? ddd '...)))
 
@@ -372,57 +397,87 @@
 ;; Every import needs to be renamed according to the sets of binders it imports
 
 
+;; wrap a piece of syntax in the appropriate number of `...`s 
+(define (wrap... stx depth)
+  (if (= depth 0)
+      stx
+      #`(#,(wrap... stx (- depth 1)) (... ...))))
+
 ;; exported-nts is a list of nonterminals
 (define (bfreshener renaming-info exported-nts)
   (map
    (match-lambda
-    [`(,mentioned-nt ,bfreshened ,vpat)
-     #`(where (#,bfreshened #,vpat)
+    [`(,mentioned-nt ,bfreshened ,vpat ,depth)
+     #`(where #,(wrap... #`(#,bfreshened #,vpat) depth)
               ;; Is the name being exported to the top level?
-              ,(if (xor #,(boolify (has-name? exported-nts mentioned-nt))
-                        (term any_top-level?))
-                   (destructure/rec (term #,mentioned-nt))
-                   ;; If not, then the names are either free (and must not be
-                   ;; renamed), or they will not become free by this destructuring
-                   ;; (and thus don't need to be renamed)
-                   (term (#,mentioned-nt ;; the value is not affected
-                          ;; to participate in shadowing correctly
-                          ;; without changing anything
-                          ,(noop-binder-substitution (term #,mentioned-nt))))))])
+              #,(wrap...
+                 #`,(if (xor #,(boolify (has-name? exported-nts mentioned-nt))
+                             (term any_top-level?))
+                        (destructure/rec (term #,mentioned-nt))
+                        ;; If not, then the names are either free (and must not be
+                        ;; renamed), or they will not become free by this destructuring
+                        ;; (and thus don't need to be renamed)
+                        (term (#,mentioned-nt ;; the value is not affected
+                               ;; to participate in shadowing correctly
+                               ;; without changing anything
+                               ,(noop-binder-substitution (term #,mentioned-nt)))))
+                 depth))])
    renaming-info))
 
 (module+ test
- (check-equal? (map syntax->datum (bfreshener
-                                   `((,#'b1 b1_ren σ_b1)
-                                     (,#'b2 b2_ren σ_b2))
-                                   `(,#'b1)))
-               '((where (b1_ren σ_b1)
-                        ,(if (xor #t (term any_top-level?))
-                             (destructure/rec (term b1))
-                             (term (b1 ,(noop-binder-substitution (term b1))))))
-                 (where (b2_ren σ_b2)
-                        ,(if (xor #f (term any_top-level?))
-                             (destructure/rec (term b2))
-                             (term (b2 ,(noop-binder-substitution (term b2)))))))))
+         (check-equal?
+          (map syntax->datum (bfreshener
+                              `((,#'b1 b1_ren σ_b1 0)
+                                (,#'b2 b2_ren σ_b2 0))
+                              `((,#'b1 0))))
+          '((where (b1_ren σ_b1)
+                   ,(if (xor #t (term any_top-level?))
+                        (destructure/rec (term b1))
+                        (term (b1 ,(noop-binder-substitution (term b1))))))
+            (where (b2_ren σ_b2)
+                   ,(if (xor #f (term any_top-level?))
+                        (destructure/rec (term b2))
+                        (term (b2 ,(noop-binder-substitution (term b2))))))))
 
-;; renaming-info is an assoc mapping nonterminal references
-;; to their freshened version and to the names of the renamings that
-;; need to be applied.
+         (check-equal?
+          (map syntax->datum (bfreshener
+                              `((,#'b0 b0_ren σ_b0 0)
+                                (,#'b1 b1_ren σ_b1 1)
+                                (,#'b2 b2_ren σ_b2 2))
+                              `()))
+          '((where (b0_ren σ_b0)
+                   ,(if (xor #f (term any_top-level?))
+                        (destructure/rec (term b0))
+                        (term (b0 ,(noop-binder-substitution (term b0))))))
+            (where ((b1_ren σ_b1) ...)
+                   (,(if (xor #f (term any_top-level?))
+                        (destructure/rec (term b1))
+                        (term (b1 ,(noop-binder-substitution (term b1))))) ...))
+            (where (((b2_ren σ_b2) ...) ...)
+                   ((,(if (xor #f (term any_top-level?))
+                        (destructure/rec (term b2))
+                        (term (b2 ,(noop-binder-substitution (term b2))))) ...) ...))))
+         )
+
+;; renaming-info is an assoc:
+;; (nonterminal reference, freshened version, "name" of its renaming, depth)
 ;; Complicating matters, we can't name the renaming as a whole
 ;; (we don't know what Redex language we're in), so we need to
 ;; call the renaming by a pattern like `((variable_from-98 variable_to-98) ...)' 
-;; (list (list identifier identifier-for-bfreshened-version renaming) ...)
+;; (list (list identifier identifier renaming natural) ...)
 (define (make-renaming-info mentioned-nts)
   (map
-     (lambda (mentioned-nt-stx)
-       (define s (symbol->string (syntax->datum mentioned-nt-stx)))
-       `(,mentioned-nt-stx
-         ;; name for the result of freshening binders
-         ;; (with the binders and all buried imports renamed)
-         ,(generate-temporary (string-append s "_with-binders-freshened"))
-         ,#`((#,(generate-temporary (string-append "variable_from" s))
-              #,(generate-temporary (string-append "variable_to" s))) (... ...))))
-     mentioned-nts))
+   (match-lambda
+    [`(,mentioned-nt-stx ,depth)
+     (define s (symbol->string (syntax->datum mentioned-nt-stx)))
+     `(,mentioned-nt-stx
+       ;; name for the result of freshening binders
+       ;; (with the binders and all buried imports renamed)
+       ,(generate-temporary (string-append s "_with-binders-freshened"))
+       ,#`((#,(generate-temporary (string-append "variable_from" s))
+            #,(generate-temporary (string-append "variable_to" s))) (... ...))
+       ,depth)])
+   mentioned-nts))
 
 ;; TODO: when we rename binders, we also need to rename all names bound to them 
 ;; in the terms that export them!
@@ -450,7 +505,7 @@
         [nt
          (match
           (name-assoc nt renaming-info)
-          [`(,_ ,bfreshened-version-of-nt ,_) bfreshened-version-of-nt]
+          [`(,_ ,bfreshened-version-of-nt ,_ ,_) bfreshened-version-of-nt]
           [#f
            #`,(if (symbol? (term #,nt)) 
                   (term #,nt) ;; atoms that aren't imported or exported are references
@@ -528,7 +583,9 @@
   (define where-σs
     (map
      (match-lambda
-      [`(,nt ,_ ,σ) #`(where #,σ ,(noop-binder-substitution (term #,nt)))])
+      [`(,nt ,_ ,σ ,depth)
+       #`(where #,(wrap... σ depth)
+                #,(wrap... #` ,(noop-binder-substitution (term #,nt)) depth))])
      renaming-info))
 
   #`(define-metafunction #,(bspec/names-lang-name bs/n)

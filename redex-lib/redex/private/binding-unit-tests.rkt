@@ -107,9 +107,8 @@
           (,a (,b ,c))))
 
 
-
+#|
  ;; `...` in beta. Doesn't work yet
- #|
  (define-language variable-arity-lambda-calc
    (e (e e)
       (va-lambda (x) e)
@@ -120,6 +119,5 @@
  (test-binding-forms
   ((va-lambda (x ...) e #:refers-to (rib x ...)))
   variable-arity-lambda-calc)
- |#
- 
+  |#
  )
