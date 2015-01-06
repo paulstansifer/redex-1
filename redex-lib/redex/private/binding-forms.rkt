@@ -35,6 +35,7 @@
 (define-syntax (nothing stx) (raise-syntax-error 'nothing "used outside of binding specification"))
 
 (struct import/internal (body beta) #:transparent)
+(struct .../internal (body) #:transparent)
 
 ;; === Parsing ===
 
@@ -93,11 +94,15 @@
     (let loop [(surface-bspec sbody)
                ;; accumulate nicer syntax
                (bspec '())]
-      (syntax-case surface-bspec ()
+      (syntax-case surface-bspec (...)
         [() bspec]
         [(#:refers-to . rest-of-body)
          (raise-syntax-error 'define-language
                              "#:refers-to requires an expression to its left"
+                             #f surface-bspec)]
+        [((... ...) . rest-of-body)
+         (raise-syntax-error 'define-language
+                             "... requires an expression to its left"
                              #f surface-bspec)]
         [(bspec-sub #:refers-to)
          (raise-syntax-error 'define-language
@@ -107,7 +112,9 @@
          (loop #'rest-of-body
                (append bspec (list (import/internal (loop #'sbspec-sub '())
                                                     #'imports-beta))))]
-        
+        [(sbspec-sub (... ...) . rest-of-body)
+         (loop #'rest-of-body
+               (append bspec (list (.../internal (loop #'sbspec-sub '())))))]
         [(sbspec-sub . rest-of-body)
          (loop #'rest-of-body
                (append bspec (list (loop #'sbspec-sub '()))))]
@@ -117,15 +124,41 @@
   (define redex-pattern
     (let loop [(bpat body)]
       (match bpat
-             [(import/internal bsub beta) (loop bsub)]
-             [(list bsub ...) (map loop bsub)]
-             [atom atom])))
+        [(import/internal bsub beta) (loop bsub)]
+        [`(,(.../internal bsub) . ,rest) `(,(loop bsub) ... . ,(loop rest))]
+        [`(,bsub . ,rest)                `(,(loop bsub) . ,(loop rest))]
+        [atom atom])))
   
   (define import-names (names-mentioned-in-bspec sbody))
   (define export-names (names-mentioned-in-beta export-beta 0))
 
   (bspec body redex-pattern export-beta import-names export-names
          (dedupe-names (append import-names export-names))))
+
+
+;; (handling `...` and outputting actual syntax is ugly; let's sequester it here)
+;; transcribe-match : match the bspec-body of a bspec and generates a transcriber.
+;; The transcriber generation has to be compositional; we do the recursion for the user.
+(define-syntax transcribe-match
+  (syntax-rules (imp)
+    [(transcribe-match bspec
+       [(imp sub-body-done beta) handle-import/internal]
+       [nt handle-nt])
+     (let loop [(body (bspec-body bspec))]
+       (match body
+         [(import/internal sub-body beta)
+          (define sub-body-done (loop sub-body))
+          handle-import/internal]
+
+         ;; these cases are automatic; the user doesn't specify how they're done
+         [`(,(.../internal sub-body) . ,rest)
+          ;; `((... ...) (... ...))` means "a plain `...` in the transcription output"
+          #`(#,(loop sub-body) ((... ...) (... ...)) . #,(loop rest))]
+         [`(,sub-body . ,rest) 
+          #`(#,(loop sub-body) . #,(loop rest))]
+         [`() #`()]
+
+         [nt handle-nt]))]))
 
 (module+ test
  (require rackunit)
@@ -135,6 +168,7 @@
           [`(,a . ,b) `(,(ds a) . ,(ds b))]
           [(import/internal p beta)
            (import/internal (ds p) (ds beta))]
+          [(.../internal body) (.../internal (ds body))]
           [atomic (if (syntax? atomic)
                       (ds (syntax->datum atomic))
                       atomic)]))
@@ -168,6 +202,14 @@
          `(a b (c d e) f g h)
          `(rib e f) `((h 0) (e 0) (b 0)) `((e 0) (f 0)) `((h 0) (e 0) (b 0) (f 0))))
 
+ (define va-lambda-bspec
+   (surface-bspec->bspec #'(((x (... ...)) expr #:refers-to (rib x (... ...)))
+                            #:exports nothing)))
+
+ (check-equal?
+  (desyntax-bspec va-lambda-bspec)
+  (bspec `((,(.../internal `x)) ,(import/internal 'expr '(rib x ...)))
+         `((x ...) expr) 'nothing '((x 1)) '() '((x 1))))
 
 
  ;; imported, exported, imported and exported
@@ -271,16 +313,13 @@
 
 
 (define (reference-renamer-transcriber σ bs)
-  (let loop [(body (bspec-body bs))]
-    (match body
-           [(import/internal sub-body beta) (loop sub-body)]
-           [(list sub-body ...) (datum->syntax #f (map loop sub-body))]
-           [atom
-            (if (has-name? (bspec-all-mentioned-nts bs) atom)
-                #`,(if (symbol? (term #,atom))
-                        (term #,atom)
-                        (rename-references (term #,σ) (term #,atom)))
-                #`,(rename-references (term #,σ) (term #,atom)))])))
+  (transcribe-match bs
+    [(imp sub-body-done beta) sub-body-done]
+    [atom (if (has-name? (bspec-all-mentioned-nts bs) atom)
+              #`,(if (symbol? (term #,atom))
+                     (term #,atom)
+                     (rename-references (term #,σ) (term #,atom)))
+              #`,(rename-references (term #,σ) (term #,atom)))]))
 
 (define (reference-renamer bs/n σ-name v-name)
   (define bs (bspec/names-bs bs/n))
@@ -293,18 +332,14 @@
     (term (variable_binding-form-name
            . #,(reference-renamer-transcriber σ-term bs)))))
 
-
 (define (binder-renamer-transcriber σ bs)
-  (let loop [(body (bspec-body bs))]
-    (match body
-           [(import/internal sub-body beta) (loop sub-body)]
-           [(list sub-body ...) (datum->syntax #f (map loop sub-body))]
-           [atom
-            (if (has-name? (bspec-all-mentioned-nts bs) atom)
-                #`,(if (symbol? (term #,atom))
-                       (rename-binders (term #,σ) (term #,atom))
-                       (term #,atom))
-                atom)])))
+  (transcribe-match bs
+    [(imp sub-body-done beta) sub-body-done]
+    [atom (if (has-name? (bspec-all-mentioned-nts bs) atom)
+              #`,(if (symbol? (term #,atom))
+                     (rename-binders (term #,σ) (term #,atom))
+                     (term #,atom))
+              atom)]))
 
 (define (binder-renamer bs/n σ-name v-name)
   (define bs (bspec/names-bs bs/n))
@@ -490,34 +525,29 @@
   (define renaming-info (make-renaming-info (bspec-all-mentioned-nts bs)))
  
   (define transcriber
-    (let loop [(body (bspec-body bs))]
-      (match body
-        [`() #`()]
-        [(import/internal body-sub beta)
-         #`,(rename-references #,(beta->subst-merger beta renaming-info)
-                               (term #,(loop body-sub)))]
-        [`(,body-sub . ,rest-of-body)
-         #`(#,(loop body-sub) . #,(loop rest-of-body))]
-        [nt
-         (match
-          (name-assoc nt renaming-info)
-          [`(,_ ,bfreshened-version-of-nt ,_ ,_) bfreshened-version-of-nt]
-          [#f
-           #`,(if (symbol? (term #,nt)) 
-                  (term #,nt) ;; atoms that aren't imported or exported are references
-                  ;; TODO: this minor corner case might slow things down.
-                  ;; Suggested optimization: bail out early in the very
-                  ;; common case where #,nt exports nothing.
-                  ;; 
-                  ;; What's going on here is that, if an nt has free binders,
-                  ;; but doesn't get imported or exported, they still need to
-                  ;; be freshened. (effectively, they're imported into zero places)
-                  ;; It's a shame, binders that don't get imported/exported
-                  ;; have no use at all! But our clients might implement
-                  ;; a perfectly reasonable language, which their clients
-                  ;; will use in this way, so it should work right.
-                  (first (destructure/rec (term #,nt))))])])))
-
+    (transcribe-match bs
+      [(imp sub-body-done beta)
+       #`,(rename-references #,(beta->subst-merger beta renaming-info)
+                             (term #,sub-body-done))]
+      [nt (match
+           (name-assoc nt renaming-info)
+           [`(,_ ,bfreshened-version-of-nt ,_ ,_) bfreshened-version-of-nt]
+           [#f
+            #`,(if (symbol? (term #,nt)) 
+                   (term #,nt) ;; atoms that aren't imported or exported are references
+                   ;; TODO: this minor corner case might slow things down.
+                   ;; Suggested optimization: bail out early in the very
+                   ;; common case where #,nt exports nothing.
+                   ;; 
+                   ;; What's going on here is that, if an nt has free binders,
+                   ;; but doesn't get imported or exported, they still need to
+                   ;; be freshened. (effectively, they're imported into zero places)
+                   ;; It's a shame, binders that don't get imported/exported
+                   ;; have no use at all! But our clients might implement
+                   ;; a perfectly reasonable language, which their clients
+                   ;; will use in this way, so it should work right.
+                   (first (destructure/rec (term #,nt))))])]))
+  
   
   
   #`(define-metafunction #,(bspec/names-lang-name bs/n)
