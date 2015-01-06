@@ -1,11 +1,53 @@
 #lang racket
+(require "error.rkt")
+
+(provide (for-syntax parse-binding-forms
+                     freshener
+                     reference-renamer
+                     binder-renamer
+                     setup-binding-forms
+                     binding-object-generator))
+
+
+;; this covers most of the file; let's not indent
+(module binding-forms-for-syntax racket
+;; the module is to make `module+ test` inside the `begin-for-syntax`
+;; be located before the end of the file, so we can import it
+
+;; === Runtime utility functions ===
+
+(define (assoc-shadow . lsts)
+  (match lsts
+    [`() `()]
+    [`(,lst-primary . ,lst-rest)
+     (append lst-primary
+             (filter (lambda (elt) (not (assoc (car elt) lst-primary)))
+                     (apply assoc-shadow lst-rest)))]))
+
+;; Takes a redex value (an "expanded beta") with `shadow-sym`s, etc., and interprets it.
+;; (Expaned betas are produced by `beta->subst-merger`).
+;; Returns a substitution.
+(define (interp-beta expanded-beta)
+  (match expanded-beta
+    [`(,first . ,rest)
+     (cond [(eq? first shadow-sym) (apply assoc-shadow (map interp-beta rest))]
+           [(eq? first rib-sym) (apply append (map interp-beta rest))]
+           [else expanded-beta])] ;; we've hit a plain substitution
+    [`() `()]
+    [atom (redex-error #f "Unexpected term found in an expanded beta: ~s" atom)]))
 
 
 ;; These are to put markers inside Redex values
 (define shadow-sym (gensym 'shadow))
 (define rib-sym (gensym 'rib))
 
-(begin-for-syntax ;; this covers most of the file; let's not indent
+
+
+;; this also overs most of the file; we won't indent it either
+(begin-for-syntax
+
+(provide (all-defined-out))
+ 
 (require racket)
 (require (for-template "binding-objects.rkt"))
 (require (for-template "reduction-semantics.rkt"))
@@ -15,13 +57,9 @@
 (require "error.rkt")
 (require (only-in racket/syntax generate-temporary))
 
-(provide parse-binding-forms
-         freshener
-         reference-renamer
-         binder-renamer
-         setup-binding-forms
-         binding-object-generator)
 
+
+;; === Parsing and other general stuff ===
 
 ;; A binding-form is a feature of the language (e.g. `let`)
 ;; The only thing we need to know is how to construct one, so it's just a constructor
@@ -160,7 +198,7 @@
 
          [nt handle-nt]))]))
 
-(module+ test
+(module+ phase-1-test
  (require rackunit)
 
  (define (ds s)
@@ -290,7 +328,7 @@
   (dedupe-names (names-mentioned-in-bspec/rec bspec 0)))
 
 (module+
- test
+ phase-1-test
 
  (define (ds-lst lst) (map (match-lambda [`(,x ,depth)
                                           `(,(syntax->datum x) ,depth)]) lst))
@@ -354,7 +392,7 @@
 
 
 
-(module+ test
+(module+ phase-1-test
  (check-equal?
   (syntax->datum (reference-renamer-transcriber #'σ lambda-bspec))
   '((,(if (symbol? (term x)) (term x) (rename-references (term σ) (term x))))
@@ -398,7 +436,7 @@
         [nt-ref (caddr (name-assoc #`nt-ref renaming-info))])))
   #`(interp-beta (term #,body)))
 
-(module+ test
+(module+ phase-1-test
   (check-equal?
    (syntax->datum (beta->subst-merger #'nothing '()))
    `(interp-beta (term ())))
@@ -455,7 +493,7 @@
                  depth))])
    renaming-info))
 
-(module+ test
+(module+ phase-1-test
          (check-equal?
           (map syntax->datum (bfreshener
                               `((,#'b1 b1_ren σ_b1 0)
@@ -561,7 +599,7 @@
   )
 
 
-(module+ test
+(module+ phase-1-test
          
  (define uq 'unquote) ;; oh boy
          
@@ -620,7 +658,7 @@
        , #,(beta->subst-merger (bspec-export-beta bs) renaming-info)
          #,@where-σs]))
 
-(module+ test
+(module+ phase-1-test
  (check-match
   (syntax->datum (noop-substituter lambda-bspec/names))
   `(define-metafunction ,mf-name
@@ -636,7 +674,7 @@
       (where ,ie-σ (,uq (noop-binder-substitution (term ,ie))))])))
 
 
-(module+ test
+(module+ phase-1-test
  (define let*-clause-bspec
    (surface-bspec->bspec #'((x expr_val let*-clause_next #:refers-to x)
                             #:exports (shadow x let*-clause_next)) ))
@@ -712,31 +750,154 @@
 
 
 ) ;; begin-for-syntax
+) ;; module binding-forms-for-syntax
 
-;; === Runtime utility function ===
 
-(define (assoc-shadow . lsts)
-  (match lsts
-    [`() `()]
-    [`(,lst-primary . ,lst-rest)
-     (append lst-primary
-             (filter (lambda (elt) (not (assoc (car elt) lst-primary)))
-                     (apply assoc-shadow lst-rest)))]))
 
-;; Takes a redex value (an "expanded beta") with `shadow-sym`s, etc., and interprets it.
-;; (Expaned betas are produced by `beta->subst-merger`).
-;; Returns a substitution.
-(define (interp-beta expanded-beta)
-  (match expanded-beta
-    [`(,first . ,rest)
-     (cond [(eq? first shadow-sym) (apply assoc-shadow (map interp-beta rest))]
-           [(eq? first rib-sym) (apply append (map interp-beta rest))]
-           [else expanded-beta])] ;; we've hit a plain substitution
-    [`() `()]
-    [atom (redex-error #f "Unexpected term found in an expanded beta: ~s" atom)]))
+
+(require 'binding-forms-for-syntax)
+;; the `binding-forms-for-syntax` module only extisted to change the placement of
+;; of the `phase-1-test` module and make it importable, so let's just
+;; import everything here
+
+
+;; === phase 0 tests ===
+
+(module+ test
+ ;; actually run the phase 1 tests, now that we're in the "real" test module
+ (require (submod ".." binding-forms-for-syntax phase-1-test))
+
+ (require rackunit)
+ (require "reduction-semantics.rkt")
+ (require "binding-objects.rkt")
+
+
+ ;; == coarse-grained tests ==
+
+ ;; This quick hack defines the necessary metafunctions,
+ ;; and it defines a binding object construction function
+ ;; for each binding form, naming it after that form.
+ (define-syntax test-binding-forms setup-binding-forms)
+
+ 
+ (define-language my-lambda-calc
+   (e (e e)
+      (my-lambda (x) e)
+      x)
+   (x variable-not-otherwise-mentioned))
+
+ ;; So this defines `my-lambda` to be a binding constructor
+ (test-binding-forms
+  ((my-lambda (x) e #:refers-to x))
+  my-lambda-calc)
+
+ (define id (my-lambda '(my-lambda (x) x)))
+ 
+
+ (check-match (destructure id)
+              `(my-lambda (,x) ,x) ;; structure was preserved
+              (not (eq? x 'x))) ;; we actually freshened the name
+
+ (define-language let*-language
+   (e (e e)
+      (my-let* clauses e)
+      x
+      number)
+   (x variable-not-otherwise-mentioned)
+   (clauses (cl x e clauses)
+            ()))
+ 
+ ;; In addition to exports, this tests destructuring.
+ ;; Being able to write `clauses` instead of `any` in the binding form definition
+ ;; relies on `redex-match` being able to recognize the opaque binding object
+ ;; as something that matches the pattern `(cl x e clauses)`.
+ (test-binding-forms
+  ((cl x e clauses #:refers-to x) #:exports (shadow clauses x)
+   (my-let* clauses e #:refers-to clauses))
+
+  let*-language)
+
+ (define basic-clauses
+   (cl `(cl a 4 ,(cl `(cl b (a 5) ,(cl `(cl c (b (a 6)) ())))))))
+ 
+ (define basic-let* (my-let* `(my-let* ,basic-clauses (a (b c)))))
+
+
+ (define (totally-destructure v)
+   (match v
+          [(binding-object destr _ _ _ _)
+           (totally-destructure (destr))]
+          [(list sub-v ...) (map totally-destructure sub-v)]
+          [atom atom]))
+
+
+ (check-match 
+  (totally-destructure basic-let*)
+  `(my-let* (cl ,a 4 (cl ,b (,a 5) (cl ,c (,b (,a 6)) ())))
+            (,a (,b ,c))))
+
+ ;; check that shadowing works properly
+ (check-match
+  (totally-destructure
+   (my-let* `(my-let* ,(cl `(cl a 1 ,(cl `(cl a a ()))))
+                      a)))
+  `(my-let* (cl ,a 1 (cl ,b ,a ()))
+            ,b)
+  (not (equal? a b)))
+
+ (define-language let3*-language
+   (e (e e)
+      x
+      number
+      (let3* ((x_a e_a) (x_b e_b) (x_c e_c)) e_body))
+   (x variable-not-otherwise-mentioned))
+
+
+ ;; a bigger, complexer form
+ (test-binding-forms
+  ((let3*
+    ((x_a e_a) (x_b e_b #:refers-to x_a) (x_c e_c #:refers-to (shadow x_b x_a)))
+    e_body #:refers-to (shadow x_c x_b x_a)))
+  let3*-language)
+
+ 
+ 
+ 
+ (check-match
+  (totally-destructure
+   (let3* `(let3* ((a 1) (b a) (c (a b)))
+                  (a (b c)))))
+  `(let3* ((,a 1) (,b ,a) (,c (,a ,b)))
+          (,a (,b ,c))))
+
+
+  ;; `...` in beta. Doesn't work yet
+ (define-language variable-arity-lambda-calc
+   (e (e e)
+      (va-lambda (x ...) e)
+      x)
+   (x variable-not-otherwise-mentioned))
+
+ #;(printf "<<<<<<~n~s~n>>>>>>>~n" (syntax->datum
+           (expand-syntax-once #'(test-binding-forms
+  ((va-lambda (x (... ...)) e #:refers-to (rib x (... ...))))
+  variable-arity-lambda-calc) )))
+ 
+ 
+ #;(test-binding-forms
+  ((va-lambda (x ...) e #:refers-to (rib x ...)))
+  variable-arity-lambda-calc)
+
+ 
+ )
+
+
+
+
 
 
 ;; TODO: worry about things like `(rib a_!_1)`
+
 
 
 
