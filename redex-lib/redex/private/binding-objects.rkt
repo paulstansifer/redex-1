@@ -34,10 +34,7 @@
   (match v
          [(list sub-v ...) (map (lambda (x) (rename-binders σ x)) sub-v)]
          [(binding-object _ _ _ _ br) (br σ)]
-         [(? symbol? s)
-          (match (assoc s σ)
-                 [`(,_ ,new-s) new-s]
-                 [#f s])]
+         [(? symbol? s) s] ;; symbols should only be renamed if mentioned
          [anything-else anything-else]))
  
 (module+ test

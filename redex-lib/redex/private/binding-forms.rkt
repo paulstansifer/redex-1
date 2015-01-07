@@ -386,6 +386,8 @@
                (map (lambda (x) `(,x 0)) `(x_2 x_444 x_1 x_9 x_3)))
  )
 
+;; == naive renaming operations ==
+
 
 (define (reference-renamer-transcriber σ bs)
   (transcribe-match bs
@@ -410,11 +412,14 @@
 (define (binder-renamer-transcriber σ bs)
   (transcribe-match bs
     [(imp sub-body-done beta) sub-body-done]
-    [atom (if (has-name? (bspec-all-mentioned-nts bs) atom)
-              #`,(if (symbol? (term #,atom))
-                     (rename-binders (term #,σ) (term #,atom))
-                     (term #,atom)) ;; ???
-              atom)]))
+    [atom
+     #`,(if (symbol? (term #,atom))
+            #,(if (has-name? (bspec-all-mentioned-nts bs) atom)
+                  #`(match (assoc (term #,atom) (term #,σ))
+                           [`(,_ ,new-atom) new-atom]
+                           [#f (term #,atom)])
+                  #`(term #,atom))
+            (rename-binders (term #,σ) (term #,atom)))]))
 
 (define (binder-renamer bs/n σ-name v-name)
   (define bs (bspec/names-bs bs/n))
