@@ -1,6 +1,7 @@
 #lang racket
 (require "error.rkt")
 
+
 (provide (for-syntax parse-binding-forms
                      freshener
                      reference-renamer
@@ -8,13 +9,15 @@
                      setup-binding-forms
                      binding-object-generator))
 
-
 ;; this covers most of the file; let's not indent
 (module binding-forms-for-syntax racket
 ;; the module is to make `module+ test` inside the `begin-for-syntax`
 ;; be located before the end of the file, so we can import it
-
-;; === Runtime utility functions ===
+(provide (all-defined-out))
+        
+(require "reduction-semantics.rkt")
+        
+;; == Runtime utility functions ==
 
 (define (assoc-shadow . lsts)
   (match lsts
@@ -42,6 +45,34 @@
 (define rib-sym (gensym 'rib))
 
 
+;; == phase 0 artifacts for tests that need to be referred to in phase 1 ==
+(define-language lambda-calculus
+  (expr (expr expr)
+        (lambda (x) expr)
+        x)
+  (x variable-not-otherwise-mentioned))
+
+(define-language ieie-lang
+  ((i e ie expr)
+   variable-not-otherwise-mentioned
+   (i e ie expr expr)
+   (list-o-refs variable-not-otherwise-mentioned ...)))
+
+(define-language my-lambda-calc
+   (e (e e)
+      (my-lambda (x) e)
+      x)
+   (x variable-not-otherwise-mentioned))
+
+(define-language let*-language
+   (e (e e)
+      (my-let* clauses e)
+      x
+      number)
+   (x variable-not-otherwise-mentioned)
+   (clauses (cl x e clauses)
+            ()))
+
 
 ;; this also overs most of the file; we won't indent it either
 (begin-for-syntax
@@ -59,7 +90,7 @@
 
 
 
-;; === Parsing and other general stuff ===
+;; == Parsing and other general stuff ==
 
 ;; A binding-form is a feature of the language (e.g. `let`)
 ;; The only thing we need to know is how to construct one, so it's just a constructor
@@ -75,7 +106,7 @@
 (struct import/internal (body beta) #:transparent)
 (struct .../internal (body) #:transparent)
 
-;; === Parsing ===
+;; == Parsing ==
 
 ;; takes the syntax that comes after a `#:binding-forms` and produces
 ;; an assoc of form names to an easier-to-use internal form
@@ -200,6 +231,7 @@
 
 (module+ phase-1-test
  (require rackunit)
+ (require "reduction-semantics.rkt")
 
  (define (ds s)
    (match s
@@ -217,13 +249,17 @@
            (bspec (ds body) (ds pattern) (ds export) (ds i-names)
                   (ds e-names) (ds all-names))]))
 
-
  (define lambda-bspec (surface-bspec->bspec #'(((x) expr #:refers-to x)
                                                #:exports nothing)))
 
  (define lambda-bspec/names (bspec/names lambda-bspec
                                          #'lambda-calculus
                                          #'l-f #'l-fb #'l-rr #'l-br #'l-ck))
+ ;; needed for the phase 0 tests
+ (provide lambda-bspec/names)
+
+
+
  
  (check-equal?
   (desyntax-bspec lambda-bspec)
@@ -257,8 +293,9 @@
        #:exports (shadow e ie))))
 
  (define ieie-bspec/names
-   (bspec/names ieie-bspec #f #f #f #f #f #f))
+   (bspec/names ieie-bspec #'ieie-lang #f #f #f #f #f))
  
+ (provide ieie-bspec/names)
  )
 
 (define (name-assoc n lst)
@@ -376,7 +413,7 @@
     [atom (if (has-name? (bspec-all-mentioned-nts bs) atom)
               #`,(if (symbol? (term #,atom))
                      (rename-binders (term #,σ) (term #,atom))
-                     (term #,atom))
+                     (term #,atom)) ;; ???
               atom)]))
 
 (define (binder-renamer bs/n σ-name v-name)
@@ -417,7 +454,7 @@
          (term any) '(_ . #,(bspec-redex-pattern bs)))]))
 
 
-;; === Beta handling ===
+;; == Beta handling ==
 
 ;; Given a beta...
 ;; ...produces a metafunction body that merges substitutions in a way that
@@ -461,7 +498,7 @@
 
 
 
-;; === Freshening ===
+;; == Freshening ==
 ;; Motto: Freshen a binder iff it is exported to the top level, but no further.
 ;; Every import needs to be renamed according to the sets of binders it imports
 
@@ -686,7 +723,7 @@
 
 
 
-;; === Tying everything together ===
+;; == Tying everything together ==
 
 (define (binding-object-generator bs/n)  
   #`(letrec
@@ -761,30 +798,77 @@
 ;; import everything here
 
 
-;; === phase 0 tests ===
+;; == phase 0 tests ==
 
 (module+ test
  ;; actually run the phase 1 tests, now that we're in the "real" test module
- (require (submod ".." binding-forms-for-syntax phase-1-test))
+ (require (only-in (submod ".." binding-forms-for-syntax phase-1-test)))
+         
+ ;; also get some bspecs we'd like to reuse
+ (require (for-syntax
+           (only-in (submod ".." binding-forms-for-syntax phase-1-test)
+                    lambda-bspec/names ieie-bspec/names)))
 
- (require rackunit)
- (require "reduction-semantics.rkt")
+ (require rackunit) 
  (require "binding-objects.rkt")
+ (require "reduction-semantics.rkt")
 
 
- ;; == coarse-grained tests ==
+ ;; === fine-grained tests ===
+
+ (define-syntax-rule (test-phase-1-fn (fn phase-0-args ...))
+   (let-syntax
+       ([test-phase-1-fn-helper
+         (lambda (stx) (syntax-case stx ()
+                         [(test-phase-1-fn) (fn phase-0-args ...)]))])
+     (test-phase-1-fn-helper)))
+ 
+ 
+
+ ;; ==== reference-renamer ====
+ (check-equal?
+  (test-phase-1-fn
+   (reference-renamer lambda-bspec/names #``((x xx) (b bb) (c cc)) #``(lambda (x) (a b))))
+  `(lambda (x) (a bb)))
+
+ 
+ (check-equal?
+  (test-phase-1-fn
+   (reference-renamer ieie-bspec/names #``((a aa) (b bb) (c cc) (d dd) (e ee) (f ff))
+                      #``(ieie a b c
+                               (list-o-refs a b c d e f g)
+                               (list-o-refs a b c d e f g))))
+  `(ieie a b c (list-o-refs aa bb cc dd ee ff g) (list-o-refs aa bb cc dd ee ff g)))
+
+
+ ;; ==== binder-renamer ====
+ (check-equal?
+  (test-phase-1-fn
+   (binder-renamer lambda-bspec/names #``((x xx) (b bb) (c cc)) #``(lambda (x) (a b))))
+  `(lambda (xx) (a b)))
+
+
+ (check-equal?
+  (test-phase-1-fn
+   (binder-renamer ieie-bspec/names #``((a aa) (b bb) (c cc) (d dd) (e ee) (f ff))
+                      #``(ieie a b c
+                               (list-o-refs a b c d e f g)
+                               (list-o-refs a b c d e f g))))
+  `(ieie aa bb cc (list-o-refs a b c d e f g) (list-o-refs a b c d e f g)))
+ )
+
+
+
+
+(module+ test
+ ;; === coarse-grained tests ===
 
  ;; This quick hack defines the necessary metafunctions,
  ;; and it defines a binding object construction function
  ;; for each binding form, naming it after that form.
  (define-syntax test-binding-forms setup-binding-forms)
 
- 
- (define-language my-lambda-calc
-   (e (e e)
-      (my-lambda (x) e)
-      x)
-   (x variable-not-otherwise-mentioned))
+
 
  ;; So this defines `my-lambda` to be a binding constructor
  (test-binding-forms
@@ -797,15 +881,6 @@
  (check-match (destructure id)
               `(my-lambda (,x) ,x) ;; structure was preserved
               (not (eq? x 'x))) ;; we actually freshened the name
-
- (define-language let*-language
-   (e (e e)
-      (my-let* clauses e)
-      x
-      number)
-   (x variable-not-otherwise-mentioned)
-   (clauses (cl x e clauses)
-            ()))
  
  ;; In addition to exports, this tests destructuring.
  ;; Being able to write `clauses` instead of `any` in the binding form definition
@@ -890,6 +965,7 @@
 
  
  )
+
 
 
 
