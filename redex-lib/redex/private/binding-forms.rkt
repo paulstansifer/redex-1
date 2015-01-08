@@ -442,21 +442,19 @@
 
  )
 
-;; TODO: this also seems to fire if the binding form doesn't match
-;; the corresponding pattern in the language. A great thing to test...
-;; but I don't know how it's being tested
+;; TODO: an old version of this also seemed to fire if the binding form doesn't match
+;; the corresponding pattern in the language. Odd, but a probably a good feature.
+
+;; expands to a procedure that errors if the given value doesn't match the pattern of the bspec
 (define (pattern-checker bs/n)
   (define bs (bspec/names-bs bs/n))
-  #`(define-metafunction #,(bspec/names-lang-name bs/n)
-      [(#,(bspec/names-pattern-checker-name bs/n)
-        ;; doesn't check the head symbol, but since that's used to *find* the
-        ;; binding form, I can't imagine that being a problem
-        (variable_binding-form-name . #,(bspec-redex-pattern bs)))
-       #t]
-      [(#,(bspec/names-pattern-checker-name bs/n) any)
-       ,(redex-error #f
-         "cannot construct ~a; it does not match the pattern ~a from its binding spec"
-         (term any) '(_ . #,(bspec-redex-pattern bs)))]))
+  #`(term-match/single #,(bspec/names-lang-name bs/n)
+      [(variable_binding-form-name . #,(bspec-redex-pattern bs)) #t]
+      [any (redex-error 
+            #f
+            "cannot construct ~a; it does not match the pattern ~a from its binding spec"
+            (term any) '(_ . #,(bspec-redex-pattern bs)))])
+  )
 
 
 ;; == Beta handling ==
@@ -739,9 +737,8 @@
           ;; binding-objects that the metafunctions would fail to match on.
           (lambda (v [check-pattern? #t])
             (cond [check-pattern?
-                   ;; call the metafunction for the error side-effect,
-                   ;; if `v` doesn't match the pattern
-                   (term (#,(bspec/names-pattern-checker-name bs/n) ,v))])
+                   ;; do this for the error side-effect] if `v` doesn't match the pattern
+                   (#,(pattern-checker bs/n) v)])
             ;; call out to the metafunctions which we've given generated names
             (binding-object
              ;; destructure (note that this specifically does not build a new
@@ -778,7 +775,6 @@
                     [`((,bf-name ,bs/n) . ,rest)
                      #`(#,(freshener bs/n)
                         #,(noop-substituter bs/n)
-                        #,(pattern-checker bs/n)
                         ;; TODO: do we really want the constructors to have the
                         ;; name of their binding form? It *is* sort of the
                         ;; obvious thing to do, however.
@@ -860,6 +856,18 @@
                                (list-o-refs a b c d e f g)
                                (list-o-refs a b c d e f g))))
   `(ieie aa bb cc (list-o-refs a b c d e f g) (list-o-refs a b c d e f g)))
+
+ ;; (need more tests here!)
+
+
+ ;; ==== pattern-checker ====
+
+ (check-exn exn:fail:redex? (lambda () ((test-phase-1-fn (pattern-checker lambda-bspec/names))
+                                        `(lambda x x))))
+
+ (check-not-exn (lambda () ((test-phase-1-fn (pattern-checker lambda-bspec/names))
+                            `(lambda (x) x))))
+
  )
 
 
