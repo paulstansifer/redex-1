@@ -512,6 +512,12 @@
       stx
       #`(#,(wrap... stx (- depth 1)) (... ...))))
 
+(define (wrap-map stx-fn stx-arg depth)
+  (match depth
+         [0 #`(#,stx-fn #,stx-arg)]
+         [1 #`(map #,stx-fn #,stx-arg)]
+         [_ #`(map (lambda (e) #,(wrap-map stx-fn #`e (- depth 1))) #,stx-arg)]))
+
 ;; exported-nts is a list of nonterminals
 ;; This returns a list of clauses for `redex-let*`.
 (define (bfreshener renaming-info exported-nts top-level?-name)
@@ -521,13 +527,14 @@
      #`[#,(wrap... #`(#,bfreshened #,vpat) depth)
         ;; Is the name being exported to the top level?
         (if (xor #,(boolify (has-name? exported-nts mentioned-nt)) #,top-level?-name)
-            (destructure/rec (term #,mentioned-nt))
+            #,(wrap-map #`destructure/rec #`(term #,(wrap... mentioned-nt depth)) depth)
             ;; If not, then the names are either free (and must not be
             ;; renamed), or they will not become free by this destructuring
             ;; (and thus don't need to be renamed)
 
             ;; to participate in shadowing correctly without changing anything
-            (noop-binder-substitution-plus-orig (term #,mentioned-nt)))]])
+            #,(wrap-map #`noop-binder-substitution-plus-orig 
+                        #`(term #,(wrap... mentioned-nt depth)) depth))]])
    renaming-info))
 
 (module+ phase-1-test
@@ -536,7 +543,7 @@
                               `((,#'b1 b1_ren σ_b1 0)
                                 (,#'b2 b2_ren σ_b2 0))
                               `((,#'b1 0))
-                              #'tl?))
+                              #`tl?))
           '([(b1_ren σ_b1)
              (if (xor #t tl?)
                  (destructure/rec (term b1))
@@ -546,26 +553,34 @@
                  (destructure/rec (term b2))
                  (noop-binder-substitution-plus-orig (term b2)))]))
 
-         ;; TODO: these ...s don't make any kind of sense
-         #;
          (check-equal?
           (map syntax->datum (bfreshener
                               `((,#'b0 b0_ren σ_b0 0)
                                 (,#'b1 b1_ren σ_b1 1)
-                                (,#'b2 b2_ren σ_b2 2))
-                              `()))
-          '((where (b0_ren σ_b0)
-                   ,(if (xor #f (term any_top-level?))
-                        (destructure/rec (term b0))
-                        (term (b0 ,(noop-binder-substitution (term b0))))))
-            (where ((b1_ren σ_b1) ...)
-                   (,(if (xor #f (term any_top-level?))
-                        (destructure/rec (term b1))
-                        (term (b1 ,(noop-binder-substitution (term b1))))) ...))
-            (where (((b2_ren σ_b2) ...) ...)
-                   ((,(if (xor #f (term any_top-level?))
-                        (destructure/rec (term b2))
-                        (term (b2 ,(noop-binder-substitution (term b2))))) ...) ...))))
+                                (,#'b2 b2_ren σ_b2 2)
+                                (,#'b3 b3_ren σ_b3 3))
+                              `()
+                              #`tl?))
+          '([(b0_ren σ_b0)
+             (if (xor #f tl?)
+                 (destructure/rec (term b0))
+                 (noop-binder-substitution-plus-orig (term b0)))]
+            [((b1_ren σ_b1) ...)
+             (if (xor #f tl?)
+                 (map destructure/rec (term (b1 ...)))
+                 (map noop-binder-substitution-plus-orig (term (b1 ...))))]
+            [(((b2_ren σ_b2) ...) ...)
+             (if (xor #f tl?)
+                 (map (lambda (e) (map destructure/rec e)) (term ((b2 ...) ...)))
+                 (map (lambda (e) (map noop-binder-substitution-plus-orig e)) 
+                      (term ((b2 ...) ...))))]
+            [((((b3_ren σ_b3) ...) ...) ...)
+             (if (xor #f tl?)
+                 (map (lambda (e) 
+                        (map (lambda (e) (map destructure/rec e)) e)) (term (((b3 ...) ...) ...)))
+                 (map (lambda (e) 
+                        (map (lambda (e) (map noop-binder-substitution-plus-orig e)) e))
+                      (term (((b3 ...) ...) ...))))]))
          )
 
 ;; renaming-info is an assoc:
