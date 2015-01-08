@@ -981,8 +981,29 @@
 
  
  )
+#;
+(module+ test
 
+ ;; === more fine-grained tests ===
+ ;; (these depend on definitions from the coarse-grained tests)
+ (define cl-bspec (surface-bspec->bspec
+                   #'((cl x e clauses #:refers-to x) #:exports (shadow clauses x))))
 
+ (define cl-bspec/names (bspec/names cl-bspec #`let*-language 0 0 0 0 0))
+
+ (define my-let*-bspec (surface-bspec->bspec
+                        #'((my-let* clauses e #:refers-to clauses))))
+ 
+ (define my-let*-bspec/names (bspec/names my-let*-bspec #`let*-language 0 0 0 0 0))
+
+ 
+ ;; We really need to test whether binder-renamer works correctly on
+ ;; exported and non-exported binders of child nodes
+ (check-equal?
+  (test-phase-1-fn
+   (binder-renamer cl-bspec/names #``((a aa) (c cc)) #`basic-clauses))
+  (cl `(cl aa 4 ,(cl `(cl b (a 5) ,(cl `(cl cc (b (a 6)) ())))))))
+)
 
 
 
