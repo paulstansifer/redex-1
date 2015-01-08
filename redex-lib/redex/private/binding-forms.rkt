@@ -684,34 +684,36 @@
 
   (define renaming-info (make-renaming-info (bspec-exported-nts bs)))
 
-  (define where-σs
+  (define σ-clauses
     (map
      (match-lambda
       [`(,nt ,_ ,σ ,depth)
-       #`(where #,(wrap... σ depth)
-                #,(wrap... #` ,(noop-binder-substitution (term #,nt)) depth))])
+       #`[#,(wrap... σ depth)
+          (term #,(wrap... #` ,(noop-binder-substitution (term #,nt)) depth))]])
      renaming-info))
 
-  #`(define-metafunction #,(bspec/names-lang-name bs/n)
-      [(#,(bspec/names-noop-binder-subst-name bs/n)
-        (variable_binding-form-name . #,(bspec-redex-pattern bs)))
-       , #,(beta->subst-merger (bspec-export-beta bs) renaming-info)
-         #,@where-σs]))
+    #`(lambda (v)
+        (redex-let* #,(bspec/names-lang-name bs/n)
+                    ([(variable_binding-form-name . #,(bspec-redex-pattern bs)) v]
+                     #,@σ-clauses)
+                    #,(beta->subst-merger (bspec-export-beta bs) renaming-info))))
 
 (module+ phase-1-test
  (check-match
   (syntax->datum (noop-substituter lambda-bspec/names))
-  `(define-metafunction ,mf-name
-     [(,_ ,bf) (,uq (interp-beta (term ())))])) ;; lambda doesn't export anything
+  `(lambda (v) (redex-let* ,_
+                 ([,bf v])
+                 (interp-beta (term ()))))) ;; lambda doesn't export anything
+
 
  
  (check-match
   (syntax->datum (noop-substituter ieie-bspec/names))
-  `(define-metafunction ,mf-name
-     [(,_ (,bf-name ,i ,e ,ie ,expr_1 ,expr_2))
-      (,uq (interp-beta (term (,shadow ,e-σ ,ie-σ))))
-      (where ,e-σ (,uq (noop-binder-substitution (term ,e))))
-      (where ,ie-σ (,uq (noop-binder-substitution (term ,ie))))])))
+  `(lambda (v) (redex-let* ,_
+                 ([(,bf-name ,i ,e ,ie ,expr_1 ,expr_2) v]
+                  [,e-σ (term (,uq (noop-binder-substitution (term ,e))))]
+                  [,ie-σ (term (,uq (noop-binder-substitution (term ,ie))))])
+                 (interp-beta (term (,shadow ,e-σ ,ie-σ)))))))
 
 
 (module+ phase-1-test
@@ -752,8 +754,7 @@
                ;; repack the binding object: its time has not yet come
                `(,(make-binding-object d/r-v) ,subst))
              ;; noop-binder-subst (returns a σ)
-             (lambda ()
-               (term (#,(bspec/names-noop-binder-subst-name bs/n) ,v)))
+             (lambda () (#,(noop-substituter bs/n) v))
              ;; ref-rename
              (lambda (σ) (make-binding-object #,(reference-renamer bs/n #`σ #`v) #f))
              ;; bnd-rename
@@ -768,8 +769,7 @@
          #,(let loop ((bs/ns (parse-binding-forms #`binding-forms-stx #`lang-name)))
              (match bs/ns
                     [`((,bf-name ,bs/n) . ,rest)
-                     #`(#,(noop-substituter bs/n)
-                        ;; TODO: do we really want the constructors to have the
+                     #`(;; TODO: do we really want the constructors to have the
                         ;; name of their binding form? It *is* sort of the
                         ;; obvious thing to do, however.
                         (define #,bf-name #,(binding-object-generator bs/n))
