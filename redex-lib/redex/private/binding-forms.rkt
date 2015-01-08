@@ -513,24 +513,22 @@
       #`(#,(wrap... stx (- depth 1)) (... ...))))
 
 ;; exported-nts is a list of nonterminals
-(define (bfreshener renaming-info exported-nts)
+;; This returns a list of clauses for `redex-let*`.
+(define (bfreshener renaming-info exported-nts top-level?-name)
   (map
    (match-lambda
     [`(,mentioned-nt ,bfreshened ,vpat ,depth)
-     #`(where #,(wrap... #`(#,bfreshened #,vpat) depth)
-              ;; Is the name being exported to the top level?
-              #,(wrap...
-                 #`,(if (xor #,(boolify (has-name? exported-nts mentioned-nt))
-                             (term any_top-level?))
-                        (destructure/rec (term #,mentioned-nt))
-                        ;; If not, then the names are either free (and must not be
-                        ;; renamed), or they will not become free by this destructuring
-                        ;; (and thus don't need to be renamed)
-                        (term (#,mentioned-nt ;; the value is not affected
-                               ;; to participate in shadowing correctly
-                               ;; without changing anything
-                               ,(noop-binder-substitution (term #,mentioned-nt)))))
-                 depth))])
+     #`[#,(wrap... #`(#,bfreshened #,vpat) depth)
+        ;; Is the name being exported to the top level?
+        (if (xor #,(boolify (has-name? exported-nts mentioned-nt)) #,top-level?-name)
+            (destructure/rec (term #,mentioned-nt))
+            ;; If not, then the names are either free (and must not be
+            ;; renamed), or they will not become free by this destructuring
+            ;; (and thus don't need to be renamed)
+            (term (#,mentioned-nt ;; the value is not affected
+                   ;; to participate in shadowing correctly
+                   ;; without changing anything
+                   ,(noop-binder-substitution (term #,mentioned-nt)))))]])
    renaming-info))
 
 (module+ phase-1-test
@@ -538,16 +536,19 @@
           (map syntax->datum (bfreshener
                               `((,#'b1 b1_ren σ_b1 0)
                                 (,#'b2 b2_ren σ_b2 0))
-                              `((,#'b1 0))))
-          '((where (b1_ren σ_b1)
-                   ,(if (xor #t (term any_top-level?))
-                        (destructure/rec (term b1))
-                        (term (b1 ,(noop-binder-substitution (term b1))))))
-            (where (b2_ren σ_b2)
-                   ,(if (xor #f (term any_top-level?))
-                        (destructure/rec (term b2))
-                        (term (b2 ,(noop-binder-substitution (term b2))))))))
+                              `((,#'b1 0))
+                              #'tl?))
+          '([(b1_ren σ_b1)
+             (if (xor #t tl?)
+                 (destructure/rec (term b1))
+                 (term (b1 ,(noop-binder-substitution (term b1)))))]
+            [(b2_ren σ_b2)
+             (if (xor #f tl?)
+                 (destructure/rec (term b2))
+                 (term (b2 ,(noop-binder-substitution (term b2)))))]))
 
+         ;; TODO: these ...s don't make any kind of sense
+         #;
          (check-equal?
           (map syntax->datum (bfreshener
                               `((,#'b0 b0_ren σ_b0 0)
@@ -591,6 +592,8 @@
 ;; TODO: when we rename binders, we also need to rename all names bound to them 
 ;; in the terms that export them!
 
+;; Emits syntax for a function that freshens values in accordance with the binding spec
+;; The function takes a value and a boolean indicating whether we're "at" the top level
 (define (freshener bs/n)
   (define bs (bspec/names-bs bs/n))
 
@@ -626,16 +629,13 @@
                    ;; will use in this way, so it should work right.
                    (first (destructure/rec (term #,nt))))])]))
   
-  
-  
-  #`(define-metafunction #,(bspec/names-lang-name bs/n)
-      [(#,(bspec/names-freshener-name bs/n) ;; name of the whole darn metafunction
-        (variable_binding-form-name . #,(bspec-redex-pattern bs)) any_top-level?)
-       ((variable_binding-form-name . #,transcriber) ;; new version of argument
-        ;; subst that higher level forms should be consistent with:
-        , #,(beta->subst-merger (bspec-export-beta bs) renaming-info))
-         ;; The necessary `where` clauses to generate the renamings that we'll use
-       #,@(bfreshener renaming-info (bspec-exported-nts bs))])
+  #`(lambda (v top-level?)
+      (redex-let* #,(bspec/names-lang-name bs/n)
+        ;; define the renamings we'll use:
+        ([(variable_binding-form-name . #,(bspec-redex-pattern bs)) v]
+         #,@(bfreshener renaming-info (bspec-exported-nts bs) #`top-level?) )
+        `(,(term (variable_binding-form-name . #,transcriber)) ;; new version of `v`
+          , #,(beta->subst-merger (bspec-export-beta bs) renaming-info))))
   )
 
 
@@ -645,38 +645,38 @@
          
  (check-match
   (syntax->datum (freshener lambda-bspec/names))
-  `(define-metafunction ,_
-     [(,_ (,bf-name (x) expr) any_top-level?)
-      ((,bf-name
-        (,x-bfreshened)
-        (,uq (rename-references
-              (interp-beta (term ,x-σ))
-              (term
-               (,uq (if (symbol? (term expr))
-                        (term expr)
-                        (first (destructure/rec (term expr)))))))))
-       (,uq (interp-beta (term ()))))
-      (where (,x-bfreshened ,x-σ)
-             (,uq (if (xor #f (term any_top-level?))
-                      (destructure/rec (term x))
-                      (term (x (,uq (noop-binder-substitution (term x))))))))]))
- 
+  `(lambda (v top-level?)
+     (redex-let* ,_ ([(,bf-name (x) expr) v]
+                     [(,x-bfreshened ,x-σ)
+                      (if (xor #f top-level?)
+                          (destructure/rec (term x))
+                          (term (x (,uq (noop-binder-substitution (term x))))))])
+       `((,uq (term (,bf-name
+                     (,x-bfreshened)
+                     (,uq (rename-references
+                           (interp-beta (term ,x-σ))
+                           (term
+                            (,uq (if (symbol? (term expr))
+                                     (term expr)
+                                     (first (destructure/rec (term expr)))))))))))
+         (,uq (interp-beta (term ())))))))
+
  (check-match
   (syntax->datum (freshener ieie-bspec/names))
-  `(define-metafunction ,_
-     [(,_ (,bf-name ,i ,e ,ie ,expr_1 ,expr_2) any_top-level?)
-      ((,bf-name
-        ,i-ren
-        ,e-ren
-        ,ie-ren
-        (,uq (rename-references
-              (interp-beta (term (,shad ,ie-σ ,i-σ))) ,_))
-        (,uq (rename-references
-              (interp-beta (term (,shad ,i-σ ,ie-σ))) ,_)))
-       (,uq (interp-beta (term (,shad ,e-σ ,ie-σ)))))
-      (where (,ie-ren ,ie-σ) ,_)
-      (where (,i-ren ,i-σ) ,_)
-      (where (,e-ren ,e-σ) ,_)]))
+  `(lambda (v top-level?)
+     (redex-let* ,_ ([(,bf-name ,i ,e ,ie ,expr_1 ,expr_2) v]
+                     [(,ie-ren ,ie-σ) ,_]
+                     [(,i-ren ,i-σ) ,_] 
+                     [(,e-ren ,e-σ) ,_])
+       `((,uq (term (,bf-name
+                     ,i-ren
+                     ,e-ren
+                     ,ie-ren
+                     (,uq (rename-references
+                           (interp-beta (term (,shad ,ie-σ ,i-σ))) ,_))
+                     (,uq (rename-references
+                           (interp-beta (term (,shad ,i-σ ,ie-σ))) ,_)))))
+         (,uq (interp-beta (term (,shad ,e-σ ,ie-σ))))))))
  )
 
 (define (noop-substituter bs/n)
@@ -744,18 +744,13 @@
              ;; destructure (note that this specifically does not build a new
              ;; binding object; this is the safe way of extracting subterms)
              (lambda ()
-               (parameterize ([caching-enabled? #f]) ;; nondeterministic!
-                 (match-define `(,destructured-v ,some-noop-subst)
-                               (term (#,(bspec/names-freshener-name bs/n) ,v #t)))
-                 destructured-v))
+               (match-define `(,destructured-v ,some-noop-subst) (#,(freshener bs/n) v #t))
+               destructured-v)
              ;; destructure/rec
              (lambda ()
-               (parameterize ([caching-enabled? #f]) ;; nondeterministic!
-                 (match-define `(,d/r-v ,subst)
-                               (term (#,(bspec/names-freshener-name bs/n) ,v #f)))
-                 ;; repack the binding object: its time has not yet come
-                 `(,(make-binding-object d/r-v) ,subst)))
-
+               (match-define `(,d/r-v ,subst) (#,(freshener bs/n) v #f))
+               ;; repack the binding object: its time has not yet come
+               `(,(make-binding-object d/r-v) ,subst))
              ;; noop-binder-subst (returns a σ)
              (lambda ()
                (term (#,(bspec/names-noop-binder-subst-name bs/n) ,v)))
@@ -773,8 +768,7 @@
          #,(let loop ((bs/ns (parse-binding-forms #`binding-forms-stx #`lang-name)))
              (match bs/ns
                     [`((,bf-name ,bs/n) . ,rest)
-                     #`(#,(freshener bs/n)
-                        #,(noop-substituter bs/n)
+                     #`(#,(noop-substituter bs/n)
                         ;; TODO: do we really want the constructors to have the
                         ;; name of their binding form? It *is* sort of the
                         ;; obvious thing to do, however.
@@ -867,6 +861,15 @@
 
  (check-not-exn (lambda () ((test-phase-1-fn (pattern-checker lambda-bspec/names))
                             `(lambda (x) x))))
+
+ ;; ==== freshener ====
+
+ (check-match
+  ((test-phase-1-fn
+    (freshener lambda-bspec/names))
+   `(lambda (x) x) #t)
+  `((lambda (,xx) ,xx) ())
+  (not (equal? xx 'x)))
 
  )
 
