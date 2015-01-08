@@ -1,13 +1,15 @@
 #lang racket
-(provide binding-object destructure noop-binder-substitution rename-references rename-binders destructure/rec)
+(provide binding-object destructure noop-binder-substitution noop-binder-substitution-plus-orig rename-references rename-binders destructure/rec)
 
 ;; A binding-object is an opaque piece of syntax with binding information.
 ;; Its fields are for internal use only; use `destructure` to extract its
 ;; structure.
 ;; * ((binding-object-destructure/rec) top-level?) ... well, it's complex,
 ;;   but it's the heart of `-destructure`.
-;; * ((binding-object-noop-binder-sibst)) emits a no-op σ whose range is
+;; * ((binding-object-noop-binder-subst)) emits a no-op σ whose range is
 ;;   the exported binders of the syntax.
+;; * ((binding-object-noop-binder-subst-plus-orig)) mimics the interface of
+;;   -destructure/rec
 ;; * ((binding-object-ref-rename bo) σ) emits a new binding object with its
 ;;   references renamed according to σ
 ;; * ((binding-object-bnd-rename bo) σ) emits a new binding object with its
@@ -16,14 +18,15 @@
 ;;   binders to fresh names
 
 (struct binding-object
-        (destructure destructure/rec noop-binder-subst ref-rename bnd-rename))
+        (destructure destructure/rec noop-binder-subst noop-binder-subst-plus-orig 
+                     ref-rename bnd-rename))
 
 ;; === Renaming ===
 
 (define (rename-references σ v)
   (match v
          [(list sub-v ...) (map (lambda (x) (rename-references σ x)) sub-v)]
-         [(binding-object _ _ _ rr _) (rr σ)]
+         [(binding-object _ _ _ _ rr _) (rr σ)]
          [(? symbol? s)
           (match (assoc s σ)
                  [`(,_ ,new-s) new-s]
@@ -33,7 +36,7 @@
 (define (rename-binders σ v)
   (match v
          [(list sub-v ...) (map (lambda (x) (rename-binders σ x)) sub-v)]
-         [(binding-object _ _ _ _ br) (br σ)]
+         [(binding-object _ _ _ _ _ br) (br σ)]
          [(? symbol? s) s] ;; symbols should only be renamed if mentioned
          [anything-else anything-else]))
  
@@ -50,7 +53,7 @@
 ;; Destructure a form, freshening exposable atoms in the process
 (define (destructure v)
   (match v
-    [(binding-object des _ _ _ _) (des)]
+    [(binding-object des _ _ _ _ _) (des)]
     ;; No binding structure at this level:     
     [anything-else anything-else]))
 
@@ -63,7 +66,7 @@
 (define (destructure/rec v)
   (match v
     [(list sub-v ...) `(,v ())] ;; nothing exported
-    [(binding-object _ dr _ _ _) (dr)]
+    [(binding-object _ dr _ _ _ _) (dr)]
     ;; Exported, so it's a binder.
     [(? symbol? s)
      ;; This gensym is what ultimately does all name freshening:
@@ -75,9 +78,18 @@
 (define (noop-binder-substitution v)
   (match v
          [(list sub-v ...) '()] ;; sequences export nothing
-         [(binding-object _ _ nbs _ _) (nbs)]
+         [(binding-object _ _ nbs _ _ _) (nbs)]
          [(? symbol? s) `((,s ,s))]
          [anything-else '()]))
+
+;; Generate a substitution that doesn't change anything, but whose
+;; range is all the binders in `v`
+(define (noop-binder-substitution-plus-orig v)
+  (match v
+         [(list sub-v ...) `(,v ())] ;; sequences export nothing
+         [(binding-object _ _ _ nbs-po _ _) (nbs-po)]
+         [(? symbol? s) `(,v ((,s ,s)))]
+         [anything-else `(,v ())]))
 
 
 

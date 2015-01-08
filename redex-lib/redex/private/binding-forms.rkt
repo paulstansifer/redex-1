@@ -525,10 +525,9 @@
             ;; If not, then the names are either free (and must not be
             ;; renamed), or they will not become free by this destructuring
             ;; (and thus don't need to be renamed)
-            (term (#,mentioned-nt ;; the value is not affected
-                   ;; to participate in shadowing correctly
-                   ;; without changing anything
-                   ,(noop-binder-substitution (term #,mentioned-nt)))))]])
+
+            ;; to participate in shadowing correctly without changing anything
+            (noop-binder-substitution-plus-orig (term #,mentioned-nt)))]])
    renaming-info))
 
 (module+ phase-1-test
@@ -541,11 +540,11 @@
           '([(b1_ren σ_b1)
              (if (xor #t tl?)
                  (destructure/rec (term b1))
-                 (term (b1 ,(noop-binder-substitution (term b1)))))]
+                 (noop-binder-substitution-plus-orig (term b1)))]
             [(b2_ren σ_b2)
              (if (xor #f tl?)
                  (destructure/rec (term b2))
-                 (term (b2 ,(noop-binder-substitution (term b2)))))]))
+                 (noop-binder-substitution-plus-orig (term b2)))]))
 
          ;; TODO: these ...s don't make any kind of sense
          #;
@@ -650,7 +649,7 @@
                      [(,x-bfreshened ,x-σ)
                       (if (xor #f top-level?)
                           (destructure/rec (term x))
-                          (term (x (,uq (noop-binder-substitution (term x))))))])
+                          (noop-binder-substitution-plus-orig (term x)))])
        `((,uq (term (,bf-name
                      (,x-bfreshened)
                      (,uq (rename-references
@@ -755,6 +754,8 @@
                `(,(make-binding-object d/r-v) ,subst))
              ;; noop-binder-subst (returns a σ)
              (lambda () (#,(noop-substituter bs/n) v))
+             ;; noop-binder-subst-plus-orig (returns a pair the original value and a σ)
+             (lambda () `(,v ,(#,(noop-substituter bs/n) v)))
              ;; ref-rename
              (lambda (σ) (make-binding-object #,(reference-renamer bs/n #`σ #`v) #f))
              ;; bnd-rename
@@ -916,7 +917,7 @@
 
  (define (totally-destructure v)
    (match v
-          [(binding-object destr _ _ _ _)
+          [(binding-object destr _ _ _ _ _)
            (totally-destructure (destr))]
           [(list sub-v ...) (map totally-destructure sub-v)]
           [atom atom]))
