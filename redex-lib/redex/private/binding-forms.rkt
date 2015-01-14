@@ -129,29 +129,17 @@
        (define str-name (symbol->string (syntax->datum #'bf-name)))
 
        (cons (list #'bf-name
-                   (bspec/names
-                    (surface-bspec->bspec #`(bf-body #:exports #,exports))
-                    lang-name
-                    (generate-temporary (string-append str-name "-freshen"))
-                    (generate-temporary (string-append str-name "-noop-bnd-subst"))
-                    (generate-temporary (string-append str-name "-ref-ren"))
-                    (generate-temporary (string-append str-name "-bnd-ren"))
-                    (generate-temporary (string-append str-name "-pattern-checker"))))
+                   (surface-bspec->bspec #`(bf-body #:exports #,exports) lang-name))
              (parse-binding-forms rest-of-bfs lang-name)))]
     [() '()]
     [_ (raise-syntax-error 'define-language "expected a parenthesized binding form." #`anything)]))
 
 (struct bspec
-        (body redex-pattern export-beta imported-nts exported-nts all-mentioned-nts)
+        (body redex-pattern export-beta imported-nts exported-nts
+              all-mentioned-nts lang-name)
         #:transparent)
 
-;; this has the names of the redex metafunctions we generate, and the language, too
-(struct bspec/names (bs lang-name freshener-name noop-binder-subst-name
-                        r-renamer-name b-renamer-name
-                        pattern-checker-name)
-        #:transparent)
-
-(define (surface-bspec->bspec surface-bspec)
+(define (surface-bspec->bspec surface-bspec lang-name)
   (define-values (sbody export-beta)
     (syntax-case surface-bspec ()
       [(b #:exports e) (values #'b #'e)]
@@ -202,32 +190,7 @@
   (define export-names (names-mentioned-in-beta export-beta 0))
 
   (bspec body redex-pattern export-beta import-names export-names
-         (dedupe-names (append import-names export-names))))
-
-
-;; (handling `...` and outputting actual syntax is ugly; let's sequester it here)
-;; transcribe-match : match the bspec-body of a bspec and generates a transcriber.
-;; The transcriber generation has to be compositional; we do the recursion for the user.
-(define-syntax transcribe-match
-  (syntax-rules (imp)
-    [(transcribe-match bspec
-       [(imp sub-body-done beta) handle-import/internal]
-       [nt handle-nt])
-     (let loop [(body (bspec-body bspec))]
-       (match body
-         [(import/internal sub-body beta)
-          (define sub-body-done (loop sub-body))
-          handle-import/internal]
-
-         ;; these cases are automatic; the user doesn't specify how they're done
-         [`(,(.../internal sub-body) . ,rest)
-          ;; `((... ...) (... ...))` means "a plain `...` in the transcription output"
-          #`(#,(loop sub-body) ((... ...) (... ...)) . #,(loop rest))]
-         [`(,sub-body . ,rest) 
-          #`(#,(loop sub-body) . #,(loop rest))]
-         [`() #`()]
-
-         [nt handle-nt]))]))
+         (dedupe-names (append import-names export-names)) lang-name))
 
 (module+ phase-1-test
  (require rackunit)
@@ -242,21 +205,22 @@
           [atomic (if (syntax? atomic)
                       (ds (syntax->datum atomic))
                       atomic)]))
+
+ (define (ds-lst lst) (map (match-lambda [`(,x ,depth)
+                                          `(,(syntax->datum x) ,depth)]) lst))
  
  (define (desyntax-bspec b)
    (match b
-          [(bspec body pattern export i-names e-names all-names)
+          [(bspec body pattern export i-names e-names all-names lang-name)
            (bspec (ds body) (ds pattern) (ds export) (ds i-names)
-                  (ds e-names) (ds all-names))]))
+                  (ds e-names) (ds all-names) (ds lang-name))]))
+ 
 
- (define lambda-bspec (surface-bspec->bspec #'(((x) expr #:refers-to x)
-                                               #:exports nothing)))
-
- (define lambda-bspec/names (bspec/names lambda-bspec
-                                         #'lambda-calculus
-                                         #'l-f #'l-fb #'l-rr #'l-br #'l-ck))
+ (define lambda-bspec
+   (surface-bspec->bspec #'(((x) expr #:refers-to x) #:exports nothing)
+                         #'lambda-calculus))
  ;; needed for the phase 0 tests
- (provide lambda-bspec/names)
+ (provide lambda-bspec)
 
 
 
@@ -264,39 +228,127 @@
  (check-equal?
   (desyntax-bspec lambda-bspec)
   (bspec `((x) ,(import/internal 'expr 'x))
-         `((x) expr) 'nothing '((x 0)) '() '((x 0))))
+         `((x) expr) 'nothing '((x 0)) '() '((x 0)) 'lambda-calculus))
  
  (check-equal?
   (desyntax-bspec (surface-bspec->bspec
                    #'((a b (c d #:refers-to h e) #:refers-to (shadow e b (rib nothing))
                          f g h)
-                      #:exports (rib e f))))
+                      #:exports (rib e f)) #'some-lang))
   (bspec `(a b ,(import/internal `(c ,(import/internal `d `h) e)
                                  `(shadow e b (rib nothing))) f g h)
          `(a b (c d e) f g h)
-         `(rib e f) `((h 0) (e 0) (b 0)) `((e 0) (f 0)) `((h 0) (e 0) (b 0) (f 0))))
+         `(rib e f) `((h 0) (e 0) (b 0)) `((e 0) (f 0)) `((h 0) (e 0) (b 0) (f 0))
+         `some-lang))
 
  (define va-lambda-bspec
-   (surface-bspec->bspec #'(((x (... ...)) expr #:refers-to (rib x (... ...)))
-                            #:exports nothing)))
+   (surface-bspec->bspec #`(((x (... ...)) expr #:refers-to (rib x (... ...)))
+                            #:exports nothing) #`variable-arity-lambda-calc))
+
+ 
 
  (check-equal?
   (desyntax-bspec va-lambda-bspec)
-  (bspec `((,(.../internal `x)) ,(import/internal 'expr '(rib x ...)))
-         `((x ...) expr) 'nothing '((x 1)) '() '((x 1))))
+  (bspec `((,(.../internal `x)) ,(import/internal `expr `(rib x ...)))
+         `((x ...) expr) `nothing `((x 1)) `() `((x 1)) `variable-arity-lambda-calc))
 
 
  ;; imported, exported, imported and exported
  (define ieie-bspec
    (surface-bspec->bspec
-    #'((i e ie expr_1 #:refers-to (shadow ie i) expr_2 #:refers-to (shadow i ie))
-       #:exports (shadow e ie))))
-
- (define ieie-bspec/names
-   (bspec/names ieie-bspec #'ieie-lang #f #f #f #f #f))
+    #`((i e ie expr_1 #:refers-to (shadow ie i) expr_2 #:refers-to (shadow i ie))
+       #:exports (shadow e ie))  #`ieie-lang))
  
- (provide ieie-bspec/names)
+ (provide ieie-bspec)
  )
+
+
+;; (handling `...` and outputting actual syntax is ugly; let's sequester it here)
+;; transcribe-match : match the bspec-body of a bspec and generates a transcriber.
+;; The transcriber generation has to be compositional; we do the recursion
+;; for the user.
+(define-syntax transcribe-match
+  (syntax-rules (imp)
+    [(transcribe-match bspec
+       [(imp sub-body-done beta) handle-import/internal]
+       [nt handle-nt])
+     (let loop [(body (bspec-body bspec))
+                (repeated-names (bspec-all-mentioned-nts bspec))]
+       (match body
+         [(import/internal sub-body beta)
+          (define sub-body-done (loop sub-body repeated-names))
+          handle-import/internal]
+         
+         ;; these cases are automatic; the user doesn't specify how they're done
+         [(.../internal sub-body)
+          (manual-... bspec sub-body repeated-names loop)]
+
+         [`(,fst . ,rst) #`(#,(loop fst repeated-names) . #,(loop rst repeated-names))]
+         [`() #`()]
+ 
+         
+         [nt handle-nt]))]))
+
+;; We can't wrap `unquote`s in `...` with impunity, so we'll essentially
+;; do MBE manually. We'll wrap a `...` around the names that drive the
+;; repetition and feed them as arguments to a `map`.
+(define (manual-... bspec transcribee repeated-names loop)
+  (begin
+    (define sub-repeated-names (repeated-names-in transcribee repeated-names))
+    (define normal-args (generate-temporaries (map first sub-repeated-names)))
+    ;; here's the `map` we're transcribing (unquoted out of a Redex term)
+    #`,(map
+        (lambda (#,@normal-args)
+          ;; Oh, but we need to bind inside terms.
+          ;; We'll shadow the name whose `...` we're handling
+          ;; with the version that's one less `...`ed
+          (redex-let #,(bspec-lang-name bspec)
+            #,(map (lambda (s-r-n n-a)
+                     #`[#,(first s-r-n) #,n-a]) ;; redex-let clause
+                   sub-repeated-names normal-args)
+            ;; append overrides in assocs
+            (term #,(loop transcribee (append sub-repeated-names repeated-names)))))
+        #,@(map (lambda (rep-name-and-depth)
+                  #`(term (#,(first rep-name-and-depth) (... ...))))
+                sub-repeated-names))))
+    ;; `(... ...)` means "a plain `...` in the transcription output"    
+   
+
+;; returns all names with depth greater than 1, with their depths decremented
+(define (repeated-names-in transcribee name-list)
+  (match transcribee
+    [(import/internal sub-body beta)
+     ;; ignore the beta; allowing it to control repetition breaks the plain
+     ;; redex-pattern
+     (repeated-names-in sub-body name-list)]
+    [(.../internal sub-body) (repeated-names-in sub-body name-list)]
+    [(list elts ...)
+     (dedupe-names
+      (append* (map (lambda (e) (repeated-names-in e name-list)) elts)))]
+    [nt (match (name-assoc nt name-list)
+          [`(,_ ,0) `()]
+          [`(,_ ,depth) `((,nt ,(- depth 1)))]
+          [#f `()])]))
+
+(module+ phase-1-test
+ (check-equal?
+  (ds-lst (repeated-names-in `(,#`a ,#`b ,#`c
+                                    ,(.../internal
+                                      (import/internal `(,#`d ,#`e) #`(rib f g h))))
+                             `((,#`a 3) (,#`b 0) (,#`c 5) (,#`e 1) (,#`g 2))))
+  `((a 2) (c 4) (e 0)))
+
+ (check-match
+  (syntax->datum (manual-... va-lambda-bspec #'x `((,#`x 1)) (lambda (x rn) x)))
+  `(,uq (map
+         (lambda (,x-normal)
+           (redex-let variable-arity-lambda-calc
+             ([x ,x-normal])
+             (term x)))
+         (term (x ,dotdotdot))))))
+
+
+
 
 (define (name-assoc n lst)
   (assf (lambda (x) (bound-identifier=? x n)) lst))
@@ -322,8 +374,8 @@
          #f)])))
 
 
-(define (has-name? lst n) ;; second is the depth
-  (memf (lambda (x) (bound-identifier=? (first x) n)) lst))
+(define (has-name? lst n) 
+  (memf (lambda (x) (bound-identifier=? (first x) n)) lst)) ;; second is the depth
 
 ;; TODO: this is handling syntax; maybe it should be vanilla data?
 (define (names-mentioned-in-beta beta depth)
@@ -367,8 +419,7 @@
 (module+
  phase-1-test
 
- (define (ds-lst lst) (map (match-lambda [`(,x ,depth)
-                                          `(,(syntax->datum x) ,depth)]) lst))
+ 
  
  (check-equal? (ds-lst (names-mentioned-in-beta #`a 0)) `((a 0)))
  (check-equal? (ds-lst (names-mentioned-in-beta #`(shadow (rib a b c) (shadow b c d e)
@@ -398,12 +449,11 @@
                      (rename-references (term #,σ) (term #,atom)))
               #`,(rename-references (term #,σ) (term #,atom)))]))
 
-(define (reference-renamer bs/n σ-name v-name)
-  (define bs (bspec/names-bs bs/n))
+(define (reference-renamer bs σ-name v-name)
   ;; We want a Redex `...`, not a #` one
   (define σ-term #`((variable_from variable_to) (... ...)))
 
-  #`(redex-let #,(bspec/names-lang-name bs/n)
+  #`(redex-let #,(bspec-lang-name bs)
       ([#,σ-term #,σ-name]
        [(variable_binding-form-name . #,(bspec-redex-pattern bs)) #,v-name])
     (term (variable_binding-form-name
@@ -421,12 +471,11 @@
                   #`(term #,atom))
             (rename-binders (term #,σ) (term #,atom)))]))
 
-(define (binder-renamer bs/n σ-name v-name)
-  (define bs (bspec/names-bs bs/n))
+(define (binder-renamer bs σ-name v-name)
   ;; We want a Redex `...`, not a #` one
   (define σ-term #`((variable_from variable_to) (... ...)))
 
-  #`(redex-let #,(bspec/names-lang-name bs/n)
+  #`(redex-let #,(bspec-lang-name bs)
       ([#,σ-term #,σ-name]
        [(variable_binding-form-name . #,(bspec-redex-pattern bs)) #,v-name])
       (term (variable_binding-form-name
@@ -446,9 +495,8 @@
 ;; the corresponding pattern in the language. Odd, but a probably a good feature.
 
 ;; expands to a procedure that errors if the given value doesn't match the pattern of the bspec
-(define (pattern-checker bs/n)
-  (define bs (bspec/names-bs bs/n))
-  #`(term-match/single #,(bspec/names-lang-name bs/n)
+(define (pattern-checker bs)
+  #`(term-match/single #,(bspec-lang-name bs)
       [(variable_binding-form-name . #,(bspec-redex-pattern bs)) #t]
       [any (redex-error 
             #f
@@ -608,8 +656,7 @@
 
 ;; Emits syntax for a function that freshens values in accordance with the binding spec
 ;; The function takes a value and a boolean indicating whether we're "at" the top level
-(define (freshener bs/n)
-  (define bs (bspec/names-bs bs/n))
+(define (freshener bs)
 
   ;; An assoc mapping nonterminal references (that have been imported)
   ;; to their freshened version and to the names of the renamings that
@@ -644,7 +691,7 @@
                    (first (destructure/rec (term #,nt))))])]))
   
   #`(lambda (v top-level?)
-      (redex-let* #,(bspec/names-lang-name bs/n)
+      (redex-let* #,(bspec-lang-name bs)
         ;; define the renamings we'll use:
         ([(variable_binding-form-name . #,(bspec-redex-pattern bs)) v]
          #,@(bfreshener renaming-info (bspec-exported-nts bs) #`top-level?) )
@@ -654,11 +701,13 @@
 
 
 (module+ phase-1-test
+
          
  (define uq 'unquote) ;; oh boy
-         
+ ;; PS: wait a sec... match doesn't interpolate...
+ 
  (check-match
-  (syntax->datum (freshener lambda-bspec/names))
+  (syntax->datum (freshener lambda-bspec))
   `(lambda (v top-level?)
      (redex-let* ,_ ([(,bf-name (x) expr) v]
                      [(,x-bfreshened ,x-σ)
@@ -676,7 +725,7 @@
          (,uq (interp-beta (term ())))))))
 
  (check-match
-  (syntax->datum (freshener ieie-bspec/names))
+  (syntax->datum (freshener ieie-bspec))
   `(lambda (v top-level?)
      (redex-let* ,_ ([(,bf-name ,i ,e ,ie ,expr_1 ,expr_2) v]
                      [(,ie-ren ,ie-σ) ,_]
@@ -693,9 +742,7 @@
          (,uq (interp-beta (term (,shad ,e-σ ,ie-σ))))))))
  )
 
-(define (noop-substituter bs/n)
-  (define bs (bspec/names-bs bs/n))
-
+(define (noop-substituter bs)
   (define renaming-info (make-renaming-info (bspec-exported-nts bs)))
 
   (define σ-clauses
@@ -707,14 +754,14 @@
      renaming-info))
 
     #`(lambda (v)
-        (redex-let* #,(bspec/names-lang-name bs/n)
+        (redex-let* #,(bspec-lang-name bs)
                     ([(variable_binding-form-name . #,(bspec-redex-pattern bs)) v]
                      #,@σ-clauses)
                     #,(beta->subst-merger (bspec-export-beta bs) renaming-info))))
 
 (module+ phase-1-test
  (check-match
-  (syntax->datum (noop-substituter lambda-bspec/names))
+  (syntax->datum (noop-substituter lambda-bspec))
   `(lambda (v) (redex-let* ,_
                  ([,bf v])
                  (interp-beta (term ()))))) ;; lambda doesn't export anything
@@ -722,7 +769,7 @@
 
  
  (check-match
-  (syntax->datum (noop-substituter ieie-bspec/names))
+  (syntax->datum (noop-substituter ieie-bspec))
   `(lambda (v) (redex-let* ,_
                  ([(,bf-name ,i ,e ,ie ,expr_1 ,expr_2) v]
                   [,e-σ (term (,uq (noop-binder-substitution (term ,e))))]
@@ -733,9 +780,8 @@
 (module+ phase-1-test
  (define let*-clause-bspec
    (surface-bspec->bspec #'((x expr_val let*-clause_next #:refers-to x)
-                            #:exports (shadow x let*-clause_next)) ))
- (define let*-clause-bspec/names
-   (bspec/names let*-clause-bspec #'scheme #'wh #'at #'ev #'er #'rr))
+                            #:exports (shadow x let*-clause_next))
+                         #'scheme))
 
  ;; TODO: check binder-freshening behavior
  )
@@ -744,7 +790,7 @@
 
 ;; == Tying everything together ==
 
-(define (binding-object-generator bs/n)  
+(define (binding-object-generator bs)  
   #`(letrec
         ((make-binding-object
           ;; TODO: forbid `variable-prefix`, `side-condition`, and
@@ -754,27 +800,27 @@
           (lambda (v [check-pattern? #t])
             (cond [check-pattern?
                    ;; do this for the error side-effect] if `v` doesn't match the pattern
-                   (#,(pattern-checker bs/n) v)])
+                   (#,(pattern-checker bs) v)])
             ;; call out to the metafunctions which we've given generated names
             (binding-object
              ;; destructure (note that this specifically does not build a new
              ;; binding object; this is the safe way of extracting subterms)
              (lambda ()
-               (match-define `(,destructured-v ,some-noop-subst) (#,(freshener bs/n) v #t))
+               (match-define `(,destructured-v ,some-noop-subst) (#,(freshener bs) v #t))
                destructured-v)
              ;; destructure/rec
              (lambda ()
-               (match-define `(,d/r-v ,subst) (#,(freshener bs/n) v #f))
+               (match-define `(,d/r-v ,subst) (#,(freshener bs) v #f))
                ;; repack the binding object: its time has not yet come
                `(,(make-binding-object d/r-v) ,subst))
              ;; noop-binder-subst (returns a σ)
-             (lambda () (#,(noop-substituter bs/n) v))
+             (lambda () (#,(noop-substituter bs) v))
              ;; noop-binder-subst-plus-orig (returns a pair the original value and a σ)
-             (lambda () `(,v ,(#,(noop-substituter bs/n) v)))
+             (lambda () `(,v ,(#,(noop-substituter bs) v)))
              ;; ref-rename
-             (lambda (σ) (make-binding-object #,(reference-renamer bs/n #`σ #`v) #f))
+             (lambda (σ) (make-binding-object #,(reference-renamer bs #`σ #`v) #f))
              ;; bnd-rename
-             (lambda (σ) (make-binding-object #,(binder-renamer bs/n #`σ #`v) #f))))))
+             (lambda (σ) (make-binding-object #,(binder-renamer bs #`σ #`v) #f))))))
       make-binding-object))
 
 
@@ -782,13 +828,13 @@
   (syntax-case stx ()
     [(setup-binding-forms binding-forms-stx lang-name)
      #`(begin . 
-         #,(let loop ((bs/ns (parse-binding-forms #`binding-forms-stx #`lang-name)))
-             (match bs/ns
-                    [`((,bf-name ,bs/n) . ,rest)
+         #,(let loop ((bses (parse-binding-forms #`binding-forms-stx #`lang-name)))
+             (match bses
+                    [`((,bf-name ,bs) . ,rest)
                      #`(;; TODO: do we really want the constructors to have the
                         ;; name of their binding form? It *is* sort of the
                         ;; obvious thing to do, however.
-                        (define #,bf-name #,(binding-object-generator bs/n))
+                        (define #,bf-name #,(binding-object-generator bs))
                         . #,(loop rest))]
                     [`() #`()])))]
     [_
@@ -818,7 +864,7 @@
  ;; also get some bspecs we'd like to reuse
  (require (for-syntax
            (only-in (submod ".." binding-forms-for-syntax phase-1-test)
-                    lambda-bspec/names ieie-bspec/names)))
+                    lambda-bspec ieie-bspec)))
 
  (require rackunit) 
  (require "binding-objects.rkt")
@@ -839,13 +885,13 @@
  ;; ==== reference-renamer ====
  (check-equal?
   (test-phase-1-fn
-   (reference-renamer lambda-bspec/names #``((x xx) (b bb) (c cc)) #``(lambda (x) (a b))))
+   (reference-renamer lambda-bspec #``((x xx) (b bb) (c cc)) #``(lambda (x) (a b))))
   `(lambda (x) (a bb)))
 
  
  (check-equal?
   (test-phase-1-fn
-   (reference-renamer ieie-bspec/names #``((a aa) (b bb) (c cc) (d dd) (e ee) (f ff))
+   (reference-renamer ieie-bspec #``((a aa) (b bb) (c cc) (d dd) (e ee) (f ff))
                       #``(ieie a b c
                                (list-o-refs a b c d e f g)
                                (list-o-refs a b c d e f g))))
@@ -855,13 +901,13 @@
  ;; ==== binder-renamer ====
  (check-equal?
   (test-phase-1-fn
-   (binder-renamer lambda-bspec/names #``((x xx) (b bb) (c cc)) #``(lambda (x) (a b))))
+   (binder-renamer lambda-bspec #``((x xx) (b bb) (c cc)) #``(lambda (x) (a b))))
   `(lambda (xx) (a b)))
 
 
  (check-equal?
   (test-phase-1-fn
-   (binder-renamer ieie-bspec/names #``((a aa) (b bb) (c cc) (d dd) (e ee) (f ff))
+   (binder-renamer ieie-bspec #``((a aa) (b bb) (c cc) (d dd) (e ee) (f ff))
                       #``(ieie a b c
                                (list-o-refs a b c d e f g)
                                (list-o-refs a b c d e f g))))
@@ -872,17 +918,17 @@
 
  ;; ==== pattern-checker ====
 
- (check-exn exn:fail:redex? (lambda () ((test-phase-1-fn (pattern-checker lambda-bspec/names))
+ (check-exn exn:fail:redex? (lambda () ((test-phase-1-fn (pattern-checker lambda-bspec))
                                         `(lambda x x))))
 
- (check-not-exn (lambda () ((test-phase-1-fn (pattern-checker lambda-bspec/names))
+ (check-not-exn (lambda () ((test-phase-1-fn (pattern-checker lambda-bspec))
                             `(lambda (x) x))))
 
  ;; ==== freshener ====
 
  (check-match
   ((test-phase-1-fn
-    (freshener lambda-bspec/names))
+    (freshener lambda-bspec))
    `(lambda (x) x) #t)
   `((lambda (,xx) ,xx) ())
   (not (equal? xx 'x)))
@@ -985,7 +1031,7 @@
       x)
    (x variable-not-otherwise-mentioned))
 
- #;(printf "<<<<<<~n~s~n>>>>>>>~n" (syntax->datum
+ (printf "<<<<<<~n~s~n>>>>>>>~n" (syntax->datum
            (expand-syntax-once #'(test-binding-forms
   ((va-lambda (x (... ...)) e #:refers-to (rib x (... ...))))
   variable-arity-lambda-calc) )))
@@ -1008,16 +1054,15 @@
  (define cl-bspec/names (bspec/names cl-bspec #`let*-language 0 0 0 0 0))
 
  (define my-let*-bspec (surface-bspec->bspec
-                        #'((my-let* clauses e #:refers-to clauses))))
- 
- (define my-let*-bspec/names (bspec/names my-let*-bspec #`let*-language 0 0 0 0 0))
+                        #'((my-let* clauses e #:refers-to clauses)) #`let*-language))
+
 
  
  ;; We really need to test whether binder-renamer works correctly on
  ;; exported and non-exported binders of child nodes
  (check-equal?
   (test-phase-1-fn
-   (binder-renamer cl-bspec/names #``((a aa) (c cc)) #`basic-clauses))
+   (binder-renamer cl-bspec #``((a aa) (c cc)) #`basic-clauses))
   (cl `(cl aa 4 ,(cl `(cl b (a 5) ,(cl `(cl cc (b (a 6)) ())))))))
 )
 
