@@ -269,72 +269,103 @@
 ;; for the user.
 (define-syntax transcribe-match
   (syntax-rules (imp)
-    [(transcribe-match bspec
+    [(transcribe-match bspec extra-repeated-names
        [(imp sub-body-done beta) handle-import/internal]
        [nt handle-nt])
-     (let loop [(body (bspec-body bspec))
-                (repeated-names (bspec-all-mentioned-nts bspec))]
-       (match body
-         [(import/internal sub-body beta)
-          (define sub-body-done (loop sub-body repeated-names))
-          handle-import/internal]
-         
-         ;; these cases are automatic; the user doesn't specify how they're done
-         [(.../internal sub-body)
-          (manual-... bspec sub-body repeated-names loop)]
+     (let ([transcriber-with-.../internal
+            (let loop [(body (bspec-body bspec))]
+              (match body
+                     [(import/internal sub-body beta)
+                      (define sub-body-done (loop sub-body))
+                      handle-import/internal]
+                     
+                     ;; these three cases are automatic; the user doesn't specify how they're done
+                     [(.../internal sub-body) (.../internal (loop sub-body))]
+                     [`(,fst . ,rst) #`(#,(loop fst) . #,(loop rst))]
+                     [`() #`()]
+                     
+                     [nt handle-nt]))])
 
-         [`(,fst . ,rst) #`(#,(loop fst repeated-names) . #,(loop rst repeated-names))]
-         [`() #`()]
- 
-         
-         [nt handle-nt]))]))
+       ;; transcriber-with-.../internal is syntax, except that it has occasional `.../internal`s
+       ;; so let's handle them now (we had to wait so that we could examine the *actual*
+       ;; names we'd be ...ing over)
+       
+       (let loop [(body transcriber-with-.../internal)
+                  (repeated-names (append extra-repeated-names
+                                          ;; TODO: I think this should cover
+                                          ;; non-binding-involved names, too
+                                          ;; but should be calculable from `body`
+                                          (bspec-all-mentioned-nts bspec)))]
+         (syntax-case body ()
+           [(fst . rst) #`(#,(loop #`fst repeated-names) . #,(loop #`rst repeated-names))]
+           [() #`()]
+           [single (if (.../internal? (syntax-e #`single))
+                       (manual-... bspec (.../internal-body (syntax-e #`single))
+                                   repeated-names loop)
+                       #`single)])))]))
+
+
+(define (override-name-list overrider old-list)
+  (append overrider
+          (filter (match-lambda [`(,nt ,_) (not (has-name? overrider nt))])
+                  old-list)))
 
 ;; We can't wrap `unquote`s in `...` with impunity, so we'll essentially
 ;; do MBE manually. We'll wrap a `...` around the names that drive the
 ;; repetition and feed them as arguments to a `map`.
-(define (manual-... bspec transcribee repeated-names loop)
+;; We thread `loop` through this so that we can reduce the count of the
+;; remaining number of `...`s we need to wrap around the names we've just wrapped
+(define (manual-... bspec almost-transcriber repeated-names loop)
   (begin
-    (define sub-repeated-names (repeated-names-in transcribee repeated-names))
+    (define sub-repeated-names (repeated-names-in almost-transcriber repeated-names))
     (define normal-args (generate-temporaries (map first sub-repeated-names)))
     ;; here's the `map` we're transcribing (unquoted out of a Redex term)
-    #`,(map
-        (lambda (#,@normal-args)
-          ;; Oh, but we need to bind inside terms.
-          ;; We'll shadow the name whose `...` we're handling
-          ;; with the version that's one less `...`ed
-          (redex-let #,(bspec-lang-name bspec)
-            #,(map (lambda (s-r-n n-a)
-                     #`[#,(first s-r-n) #,n-a]) ;; redex-let clause
-                   sub-repeated-names normal-args)
-            ;; append overrides in assocs
-            (term #,(loop transcribee (append sub-repeated-names repeated-names)))))
-        #,@(map (lambda (rep-name-and-depth)
-                  #`(term (#,(first rep-name-and-depth) (... ...))))
-                sub-repeated-names))))
-    ;; `(... ...)` means "a plain `...` in the transcription output"    
+    #`,@(map
+         (lambda (#,@normal-args)
+           ;; Oh, but we need to bind inside terms.
+           ;; We'll shadow the name whose `...` we're handling
+           ;; with the version that's one less `...`ed
+           (redex-let #,(bspec-lang-name bspec)
+                      #,(map (lambda (s-r-n n-a)
+                               #`[#,(first s-r-n) #,n-a]) ;; redex-let clause
+                             sub-repeated-names normal-args)
+                      (term #,(loop almost-transcriber 
+                                    (override-name-list sub-repeated-names repeated-names)))))
+         #,@(map (lambda (rep-name-and-depth)
+                   #`(term (#,(first rep-name-and-depth) (... ...))))
+                 sub-repeated-names))))
+    ;; `(... ...)` means "a plain `...` in the transcription output" 
    
 
 ;; returns all names with depth greater than 1, with their depths decremented
-(define (repeated-names-in transcribee name-list)
-  (match transcribee
-    [(import/internal sub-body beta)
-     ;; ignore the beta; allowing it to control repetition breaks the plain
-     ;; redex-pattern
-     (repeated-names-in sub-body name-list)]
-    [(.../internal sub-body) (repeated-names-in sub-body name-list)]
-    [(list elts ...)
-     (dedupe-names
-      (append* (map (lambda (e) (repeated-names-in e name-list)) elts)))]
-    [nt (match (name-assoc nt name-list)
-          [`(,_ ,0) `()]
-          [`(,_ ,depth) `((,nt ,(- depth 1)))]
-          [#f `()])]))
+(define (repeated-names-in almost-transcriber name-list)
+  (syntax-case almost-transcriber (rename-references)
+    [(rename-references sigma-constructor sub-body)
+     ;; Ignore the substitution: it should not be able to drive repetition 
+     ;; on its own anyways. Note that this means that `(x ... (e #:refers-to x) ...)`
+     ;; will not work. But it's tricky to make it work, given that
+     ;; its stripped form is `(x ... (e) ...)`, which doesn't even lock the two
+     ;; `...`s to the same length. 
+     (repeated-names-in #`sub-body name-list)]
+    [(fst . rst)
+     (dedupe-names (append (repeated-names-in #`fst name-list)
+                           (repeated-names-in #`rst name-list)))]
+    [() `()]
+    [single
+     (match (syntax-e #`single)
+            [(.../internal body) (repeated-names-in body name-list)]
+            [(? symbol?) ;; it was an identifier
+             (match (name-assoc #`single name-list)
+                [`(,_ ,0) `()]
+                [`(,nt ,depth) `((,nt ,(- depth 1)))]
+                [#f `()])]
+            [_ `()])]))
 
 (module+ phase-1-test
  (check-equal?
-  (ds-lst (repeated-names-in `(,#`a ,#`b ,#`c
-                                    ,(.../internal
-                                      (import/internal `(,#`d ,#`e) #`(rib f g h))))
+  (ds-lst (repeated-names-in #`(a b c
+                                  #,(.../internal
+                                     #`(rename-references (rib f g h) (d e) )))
                              `((,#`a 3) (,#`b 0) (,#`c 5) (,#`e 1) (,#`g 2))))
   `((a 2) (c 4) (e 0)))
 
@@ -345,7 +376,20 @@
            (redex-let variable-arity-lambda-calc
              ([x ,x-normal])
              (term x)))
-         (term (x ,dotdotdot))))))
+         (term (x ,dotdotdot)))))
+
+
+ (check-match
+  (syntax->datum (manual-... va-lambda-bspec #`(x (y)) `((,#`x 1) (,#`y 1))
+                             (lambda (x rn) x)))
+  `(,uq (map
+         (lambda (,x-normal ,y-normal)
+           (redex-let variable-arity-lambda-calc
+                      ([x ,x-normal] [y ,y-normal])
+             (term (x (y)))))
+         (term (x ,dotdotdot)) (term (y ,dotdotdot)))))
+
+ )
 
 
 
@@ -438,10 +482,10 @@
  )
 
 ;; == naive renaming operations ==
-
+;; TODO: make these un-naive; naive reference/binder renaming breaks alpha-equivalence
 
 (define (reference-renamer-transcriber σ bs)
-  (transcribe-match bs
+  (transcribe-match bs '()
     [(imp sub-body-done beta) sub-body-done]
     [atom (if (has-name? (bspec-all-mentioned-nts bs) atom)
               #`,(if (symbol? (term #,atom))
@@ -460,7 +504,7 @@
            . #,(reference-renamer-transcriber σ-term bs)))))
 
 (define (binder-renamer-transcriber σ bs)
-  (transcribe-match bs
+  (transcribe-match bs '()
     [(imp sub-body-done beta) sub-body-done]
     [atom
      #`,(if (symbol? (term #,atom))
@@ -665,9 +709,13 @@
   ;; (we don't know what Redex language we're in), so we need to
   ;; call the renaming by a pattern like `((variable_from-98 variable_to-98) ...)' 
   (define renaming-info (make-renaming-info (bspec-all-mentioned-nts bs)))
- 
+
+  (define extra-...ed-names
+    (map (match-lambda [`(,_ ,bfreshened-nt ,_ ,depth) `(,bfreshened-nt ,depth)])
+         renaming-info))
+  
   (define transcriber
-    (transcribe-match bs
+    (transcribe-match bs extra-...ed-names
       [(imp sub-body-done beta)
        #`,(rename-references #,(beta->subst-merger beta renaming-info)
                              (term #,sub-body-done))]
@@ -1026,20 +1074,51 @@
 
   ;; `...` in beta. Doesn't work yet
  (define-language variable-arity-lambda-calc
-   (e (e e)
+   (e (e e ...)
       (va-lambda (x ...) e)
       x)
    (x variable-not-otherwise-mentioned))
-
- (printf "<<<<<<~n~s~n>>>>>>>~n" (syntax->datum
-           (expand-syntax-once #'(test-binding-forms
-  ((va-lambda (x (... ...)) e #:refers-to (rib x (... ...))))
-  variable-arity-lambda-calc) )))
  
  
- #;(test-binding-forms
+ (test-binding-forms
   ((va-lambda (x ...) e #:refers-to (rib x ...)))
   variable-arity-lambda-calc)
+
+ (check-match
+  (totally-destructure (va-lambda `(va-lambda (x) x)))
+  `(va-lambda (,x) ,x))
+
+
+ (check-match
+  (totally-destructure (va-lambda `(va-lambda (a b c) (a (b (c d))))))
+  `(va-lambda (,a ,b ,c) (,a (,b (,c d))))
+  (and (not (eq? a b))
+       (not (eq? b c))
+       (not (eq? c a))))
+
+ (define-language siamese-lambdas
+   (e (e e ...)
+      (siamese-lambda ((x ...) e) ...)
+      x)
+   (x variable-not-otherwise-mentioned))
+
+
+
+ #;
+ (test-binding-forms
+  ((siamese-lambda ((x ...) e #:refers-to (rib x ...)) ...))
+  siamese-lambdas)
+
+ #;
+ (check-match
+  (totally-destructure 
+   (siamese-lambda `(siamese-lambda ((a b c) (a (b (c d)))) 
+                                    ((a b) (b a)))))
+  `(siamese-lambda ((,a ,b ,c) (,a (,b (,c d)))) 
+                   ((,a2 ,b2) (,b2 ,a2)))
+  (and (not (eq? a a2) (eq? b b2))))
+
+ 
 
  
  )
