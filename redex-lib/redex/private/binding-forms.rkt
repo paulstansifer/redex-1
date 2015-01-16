@@ -366,13 +366,6 @@
 ;; returns all names with depth greater than 1, with their depths decremented
 (define (repeated-names-in almost-transcriber name-list)
   (syntax-case almost-transcriber (rename-references)
-    #;[(rename-references sigma-constructor sub-body)
-     ;; Ignore the substitution: it should not be able to drive repetition 
-     ;; on its own anyways. Note that this means that `(x ... (e #:refers-to x) ...)`
-     ;; will not work. But it's tricky to make it work, given that
-     ;; its stripped form is `(x ... (e) ...)`, which doesn't even lock the two
-     ;; `...`s to the same length. 
-     (repeated-names-in #`sub-body name-list)]
     [(fst . rst)
      (dedupe-names (append (repeated-names-in #`fst name-list)
                            (repeated-names-in #`rst name-list)))]
