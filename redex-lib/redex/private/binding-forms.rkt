@@ -136,7 +136,7 @@
 
 (struct bspec
         (body redex-pattern export-beta imported-nts exported-nts
-              all-mentioned-nts lang-name)
+              ported-nts lang-name)
         #:transparent)
 
 (define (surface-bspec->bspec surface-bspec lang-name)
@@ -186,7 +186,7 @@
         [`(,bsub . ,rest)                `(,(loop bsub) . ,(loop rest))]
         [atom atom])))
   
-  (define import-names (names-mentioned-in-bspec sbody))
+  (define import-names (names-imported-in-bspec sbody))
   (define export-names (names-mentioned-in-beta export-beta 0))
 
   (bspec body redex-pattern export-beta import-names export-names
@@ -292,10 +292,9 @@
        
        (let loop [(body transcriber-with-.../internal)
                   (repeated-names (append extra-repeated-names
-                                          ;; TODO: I think this should cover
-                                          ;; non-binding-involved names, too
-                                          ;; but should be calculable from `body`
-                                          (bspec-all-mentioned-nts bspec)))]
+                                          ;; TODO: calculate all names, not just ones 
+                                          ;; that get `#:refers-to`ed
+                                          (names-mentioned-in (bspec-body bspec))))]
          (syntax-case body ()
            [(fst . rst) #`(#,(loop #`fst repeated-names) . #,(loop #`rst repeated-names))]
            [() #`()]
@@ -304,11 +303,38 @@
                                    repeated-names loop)
                        #`single)])))]))
 
+;; This is a lot like names-imported-in-bspec, but the latter only looks at names
+;; mentioned in `refers-to`s.
+
+
+(define (names-mentioned-in/rec body depth)
+  (match body
+         [(import/internal sub-body beta) 
+          (append (names-mentioned-in/rec sub-body depth)
+                  (names-mentioned-in-beta beta depth))]
+         [(.../internal sub-body) (names-mentioned-in/rec sub-body (+ depth 1))]
+         [`(,fst . ,rst) (append (names-mentioned-in/rec fst depth)
+                                 (names-mentioned-in/rec rst depth))]
+         [`() `()]
+         [(? identifier? ident) `((,ident ,depth))]
+         [_ `()]))
+
+(define (names-mentioned-in body)
+  (dedupe-names (names-mentioned-in/rec body 0)))
+
 
 (define (override-name-list overrider old-list)
   (append overrider
           (filter (match-lambda [`(,nt ,_) (not (has-name? overrider nt))])
                   old-list)))
+
+;; wrap a piece of syntax in the appropriate number of `...`s 
+(define (wrap... stx depth)
+  (if (= depth 0)
+      stx
+      #`(#,(wrap... stx (- depth 1)) (... ...))))
+;; `(... ...)` means "a plain `...` in the transcription output" 
+
 
 ;; We can't wrap `unquote`s in `...` with impunity, so we'll essentially
 ;; do MBE manually. We'll wrap a `...` around the names that drive the
@@ -326,21 +352,21 @@
            ;; We'll shadow the name whose `...` we're handling
            ;; with the version that's one less `...`ed
            (redex-let #,(bspec-lang-name bspec)
-                      #,(map (lambda (s-r-n n-a)
-                               #`[#,(first s-r-n) #,n-a]) ;; redex-let clause
+                      #,(map (match-lambda* 
+                              [`((,rep-name ,depth) ,n-a)
+                               #`[#,(wrap... rep-name depth) #,n-a]]) ;; redex-let clause
                              sub-repeated-names normal-args)
                       (term #,(loop almost-transcriber 
                                     (override-name-list sub-repeated-names repeated-names)))))
-         #,@(map (lambda (rep-name-and-depth)
-                   #`(term (#,(first rep-name-and-depth) (... ...))))
+         #,@(map (match-lambda [`(,rep-name ,depth) #`(term #,(wrap... rep-name (+ depth 1)))])
                  sub-repeated-names))))
-    ;; `(... ...)` means "a plain `...` in the transcription output" 
+
    
 
 ;; returns all names with depth greater than 1, with their depths decremented
 (define (repeated-names-in almost-transcriber name-list)
   (syntax-case almost-transcriber (rename-references)
-    [(rename-references sigma-constructor sub-body)
+    #;[(rename-references sigma-constructor sub-body)
      ;; Ignore the substitution: it should not be able to drive repetition 
      ;; on its own anyways. Note that this means that `(x ... (e #:refers-to x) ...)`
      ;; will not work. But it's tricky to make it work, given that
@@ -367,27 +393,27 @@
                                   #,(.../internal
                                      #`(rename-references (rib f g h) (d e) )))
                              `((,#`a 3) (,#`b 0) (,#`c 5) (,#`e 1) (,#`g 2))))
-  `((a 2) (c 4) (e 0)))
+  `((a 2) (c 4) (g 1) (e 0)))
 
  (check-match
   (syntax->datum (manual-... va-lambda-bspec #'x `((,#`x 1)) (lambda (x rn) x)))
-  `(,uq (map
-         (lambda (,x-normal)
-           (redex-let variable-arity-lambda-calc
-             ([x ,x-normal])
-             (term x)))
-         (term (x ,dotdotdot)))))
+  `(,uqs (map
+          (lambda (,x-normal)
+            (redex-let variable-arity-lambda-calc
+              ([x ,x-normal])
+              (term x)))
+          (term (x ,dotdotdot)))))
 
 
  (check-match
   (syntax->datum (manual-... va-lambda-bspec #`(x (y)) `((,#`x 1) (,#`y 1))
                              (lambda (x rn) x)))
-  `(,uq (map
-         (lambda (,x-normal ,y-normal)
-           (redex-let variable-arity-lambda-calc
-                      ([x ,x-normal] [y ,y-normal])
-             (term (x (y)))))
-         (term (x ,dotdotdot)) (term (y ,dotdotdot)))))
+  `(,uqs (map
+          (lambda (,x-normal ,y-normal)
+            (redex-let variable-arity-lambda-calc
+              ([x ,x-normal] [y ,y-normal])
+              (term (x (y)))))
+          (term (x ,dotdotdot)) (term (y ,dotdotdot)))))
 
  )
 
@@ -438,27 +464,29 @@
     [name `((,#'name ,depth))]))
 
 ;; TODO: this is handling surface bspecs; it should get normal bspecs
-(define (names-mentioned-in-bspec/rec bspec depth)
+;; Names mentioned by some beta #:referred-to in the bspec
+(define (names-imported-in-bspec/rec bspec depth)
   (syntax-case bspec (...)
     [() '()]
     [(bspec-sub (... ...) . rest)
-     (append (names-mentioned-in-bspec/rec #'bspec-sub (+ depth 1))
-             (names-mentioned-in-bspec/rec #'rest depth))]
+     (append (names-imported-in-bspec/rec #'bspec-sub (+ depth 1))
+             (names-imported-in-bspec/rec #'rest depth))]
     [(bspec-sub #:refers-to beta (... ...) . rest)
-     (append (names-mentioned-in-bspec/rec #'bspec-sub (+ depth 1))
+     (append (names-imported-in-bspec/rec #'bspec-sub (+ depth 1))
              (names-mentioned-in-beta #'beta (+ depth 1))
-             (names-mentioned-in-bspec/rec #'rest depth))]
+             (names-imported-in-bspec/rec #'rest depth))]
     [(bspec-sub #:refers-to beta . rest)
-     (append (names-mentioned-in-bspec/rec #'bspec-sub depth)
+     (append (names-imported-in-bspec/rec #'bspec-sub depth)
              (names-mentioned-in-beta #'beta depth)
-             (names-mentioned-in-bspec/rec #'rest depth))]
+             (names-imported-in-bspec/rec #'rest depth))]
     [(bspec-sub . rest)
-     (append (names-mentioned-in-bspec/rec #'bspec-sub depth)
-             (names-mentioned-in-bspec/rec #'rest depth))]
+     (append (names-imported-in-bspec/rec #'bspec-sub depth)
+             (names-imported-in-bspec/rec #'rest depth))]
     [plain '()]))
 
-(define (names-mentioned-in-bspec bspec)
-  (dedupe-names (names-mentioned-in-bspec/rec bspec 0)))
+(define (names-imported-in-bspec bspec)
+  (dedupe-names (names-imported-in-bspec/rec bspec 0)))
+
 
 (module+
  phase-1-test
@@ -471,9 +499,9 @@
                                                           nothing nothing) 0))
                (map (lambda (x) `(,x 0)) `(a b c d e f g h)))
 
- (check-equal? (ds-lst (names-mentioned-in-bspec #`((x) e #:refers-to x))) `((x 0)))
- (check-equal? (ds-lst (names-mentioned-in-bspec #`((x) e))) `())
- (check-equal? (ds-lst (names-mentioned-in-bspec #`(x_11
+ (check-equal? (ds-lst (names-imported-in-bspec #`((x) e #:refers-to x))) `((x 0)))
+ (check-equal? (ds-lst (names-imported-in-bspec #`((x) e))) `())
+ (check-equal? (ds-lst (names-imported-in-bspec #`(x_11
                                                     e_1 #:refers-to (shadow x_2 x_444)
                                                     (x_22 x_33 #:refers-to (rib x_1 x_2)
                                                           (e_2 e_3 #:refers-to (rib x_9))
@@ -487,7 +515,7 @@
 (define (reference-renamer-transcriber σ bs)
   (transcribe-match bs '()
     [(imp sub-body-done beta) sub-body-done]
-    [atom (if (has-name? (bspec-all-mentioned-nts bs) atom)
+    [atom (if (has-name? (bspec-ported-nts bs) atom)
               #`,(if (symbol? (term #,atom))
                      (term #,atom)
                      (rename-references (term #,σ) (term #,atom)))
@@ -508,7 +536,7 @@
     [(imp sub-body-done beta) sub-body-done]
     [atom
      #`,(if (symbol? (term #,atom))
-            #,(if (has-name? (bspec-all-mentioned-nts bs) atom)
+            #,(if (has-name? (bspec-ported-nts bs) atom)
                   #`(match (assoc (term #,atom) (term #,σ))
                            [`(,_ ,new-atom) new-atom]
                            [#f (term #,atom)])
@@ -598,11 +626,6 @@
 ;; Every import needs to be renamed according to the sets of binders it imports
 
 
-;; wrap a piece of syntax in the appropriate number of `...`s 
-(define (wrap... stx depth)
-  (if (= depth 0)
-      stx
-      #`(#,(wrap... stx (- depth 1)) (... ...))))
 
 (define (wrap-map stx-fn stx-arg depth)
   (match depth
@@ -615,18 +638,18 @@
 (define (bfreshener renaming-info exported-nts top-level?-name)
   (map
    (match-lambda
-    [`(,mentioned-nt ,bfreshened ,vpat ,depth)
+    [`(,ported-nt ,bfreshened ,vpat ,depth)
      #`[#,(wrap... #`(#,bfreshened #,vpat) depth)
         ;; Is the name being exported to the top level?
-        (if (xor #,(boolify (has-name? exported-nts mentioned-nt)) #,top-level?-name)
-            #,(wrap-map #`destructure/rec #`(term #,(wrap... mentioned-nt depth)) depth)
+        (if (xor #,(boolify (has-name? exported-nts ported-nt)) #,top-level?-name)
+            #,(wrap-map #`destructure/rec #`(term #,(wrap... ported-nt depth)) depth)
             ;; If not, then the names are either free (and must not be
             ;; renamed), or they will not become free by this destructuring
             ;; (and thus don't need to be renamed)
 
             ;; to participate in shadowing correctly without changing anything
             #,(wrap-map #`noop-binder-substitution-plus-orig 
-                        #`(term #,(wrap... mentioned-nt depth)) depth))]])
+                        #`(term #,(wrap... ported-nt depth)) depth))]])
    renaming-info))
 
 (module+ phase-1-test
@@ -681,19 +704,19 @@
 ;; (we don't know what Redex language we're in), so we need to
 ;; call the renaming by a pattern like `((variable_from-98 variable_to-98) ...)' 
 ;; (list (list identifier identifier renaming natural) ...)
-(define (make-renaming-info mentioned-nts)
+(define (make-renaming-info ported-nts)
   (map
    (match-lambda
-    [`(,mentioned-nt-stx ,depth)
-     (define s (symbol->string (syntax->datum mentioned-nt-stx)))
-     `(,mentioned-nt-stx
+    [`(,ported-nt-stx ,depth)
+     (define s (symbol->string (syntax->datum ported-nt-stx)))
+     `(,ported-nt-stx
        ;; name for the result of freshening binders
        ;; (with the binders and all buried imports renamed)
        ,(generate-temporary (string-append s "_with-binders-freshened"))
        ,#`((#,(generate-temporary (string-append "variable_from" s))
             #,(generate-temporary (string-append "variable_to" s))) (... ...))
        ,depth)])
-   mentioned-nts))
+   ported-nts))
 
 ;; TODO: when we rename binders, we also need to rename all names bound to them 
 ;; in the terms that export them!
@@ -708,11 +731,16 @@
   ;; Complicating matters, we can't name the renaming as a whole
   ;; (we don't know what Redex language we're in), so we need to
   ;; call the renaming by a pattern like `((variable_from-98 variable_to-98) ...)' 
-  (define renaming-info (make-renaming-info (bspec-all-mentioned-nts bs)))
+  (define renaming-info (make-renaming-info (bspec-ported-nts bs)))
 
   (define extra-...ed-names
-    (map (match-lambda [`(,_ ,bfreshened-nt ,_ ,depth) `(,bfreshened-nt ,depth)])
-         renaming-info))
+    (append*
+     (map (match-lambda 
+           [`(,_ ,bfreshened-nt ,σ-name ,depth) 
+            (syntax-case σ-name ()
+              [((from-name to-name) dotdotdot)
+               `((,bfreshened-nt ,depth) (,#`from-name ,(+ depth 1)) (,#`to-name ,(+ depth 1)))])])
+          renaming-info)))
   
   (define transcriber
     (transcribe-match bs extra-...ed-names
@@ -1101,22 +1129,24 @@
       (siamese-lambda ((x ...) e) ...)
       x)
    (x variable-not-otherwise-mentioned))
+ 
 
+ #;(printf "<<~n~s>>~n" (syntax->datum (expand-syntax-once  #`(test-binding-forms
+  ((siamese-lambda ((x) e #:refers-to x) (... ...)))
+  siamese-lambdas))))
+ 
 
-
- #;
  (test-binding-forms
   ((siamese-lambda ((x ...) e #:refers-to (rib x ...)) ...))
   siamese-lambdas)
 
- #;
  (check-match
   (totally-destructure 
    (siamese-lambda `(siamese-lambda ((a b c) (a (b (c d)))) 
                                     ((a b) (b a)))))
   `(siamese-lambda ((,a ,b ,c) (,a (,b (,c d)))) 
                    ((,a2 ,b2) (,b2 ,a2)))
-  (and (not (eq? a a2) (eq? b b2))))
+  (and (not (eq? a a2)) (not (eq? b b2))))
 
  
 
