@@ -50,8 +50,9 @@ See match-a-pattern.rkt for more details
          "underscore-allowed.rkt"
          "match-a-pattern.rkt"
          "lang-struct.rkt"
-         "enum.rkt"
-         (only-in "binding-objects.rkt" destructure))
+         "enum.rkt")
+
+(define (destructure x) x) ;; TODO: get `possibly-freshener` in here
 
 (define-struct compiled-pattern (cp binds-names? skip-dup-check?) #:transparent)
 
