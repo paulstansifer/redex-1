@@ -1,11 +1,7 @@
 #lang racket
 (require "error.rkt")
 
-
-(provide (for-syntax parse-binding-forms
-                     freshener
-                     reference-renamer
-                     binder-renamer))
+(provide binding-info->freshener)
 
 ;; this covers most of the file; let's not indent
 (module binding-forms-for-syntax racket
@@ -872,7 +868,7 @@
  ;; TODO: check binder-freshening behavior
  )
 
-
+;; == Tying everything together ==
 
 ;; Use `somethinger` to generate handlers for all the binding forms in `bses`.
 (define (invocation-match somethinger vanilla-somethinger
@@ -920,11 +916,8 @@
          #`(first (#,(invocation-match freshener vanilla-freshener-clauses
                                        bses lang-name #`#t) v)))))
 
-
-;; == Tying everything together ==
-
-
-
+(define (binding-info->freshener binder-info lang-name)
+  (possibly-freshener (parse-binding-forms binder-info lang-name) lang-name))
 
 ) ;; begin-for-syntax
 ) ;; module binding-forms-for-syntax
@@ -1058,9 +1051,7 @@
    (syntax-case stx ()
      [(define-freshener freshener-name lang-name binder-info ...)
       #`(define freshener-name
-          #,(possibly-freshener
-             (parse-binding-forms #`(binder-info ...) #`lang-name)
-             #`lang-name))]))
+          #,(binding-info->freshener #`(binder-info ...) #`lang-name))]))
 
  (define-freshener big-freshener
    big-language
