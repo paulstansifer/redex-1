@@ -52,8 +52,6 @@ See match-a-pattern.rkt for more details
          "lang-struct.rkt"
          "enum.rkt")
 
-(define (destructure x) x) ;; TODO: get `possibly-freshener` in here
-
 (define-struct compiled-pattern (cp binds-names? skip-dup-check?) #:transparent)
 
 (define caching-enabled? (make-parameter #t))
@@ -123,7 +121,7 @@ See match-a-pattern.rkt for more details
 (define-struct compiled-lang (lang delayed-cclang ht list-ht raw-across-ht raw-across-list-ht
                                    has-hole-or-hide-hole-ht cache bind-names-cache pict-builder
                                    literals nt-map collapsible-nts
-                                   binding-forms enum-table))
+                                   freshen enum-table))
 (define (compiled-lang-cclang x) (force (compiled-lang-delayed-cclang x)))
 (define (compiled-lang-across-ht x)
   (compiled-lang-cclang x) ;; ensure this is computed
@@ -147,8 +145,8 @@ See match-a-pattern.rkt for more details
                (bind-exp rib)
                (loop (cdr ribs))))]))))
 
-;; compile-language : language-pict-info[see pict.rkt] (listof nt) (listof (uf-set/c symbol?)) binding-forms -> compiled-lang
-(define (compile-language pict-info lang nt-map binding-forms)
+;; compile-language : language-pict-info[see pict.rkt] (listof nt) (listof (uf-set/c symbol?)) freshener -> compiled-lang
+(define (compile-language pict-info lang nt-map freshener)
   (let* ([clang-ht (make-hasheq)]
          [clang-list-ht (make-hasheq)]
          [across-ht (make-hasheq)]
@@ -166,7 +164,7 @@ See match-a-pattern.rkt for more details
                                     literals
                                     nt-map
                                     collapsible-nts
-                                    binding-forms
+                                    freshener
                                     #f)]
          [non-list-nt-table (build-non-list-nt-label lang)]
          [list-nt-table (build-list-nt-label lang)]
@@ -177,8 +175,9 @@ See match-a-pattern.rkt for more details
                 (define-values (compiled-pattern-proc has-hole? has-hide-hole? names) 
                   (compile-pattern/cross? clang (rhs-pattern rhs) #f))
                 (define (add-to-ht ht) 
-                  (define nv (cons (build-compiled-pattern compiled-pattern-proc names)
-                                   (hash-ref ht (nt-name nt))))
+                  (define nv (cons
+                              (build-compiled-pattern compiled-pattern-proc names)
+                              (hash-ref ht (nt-name nt))))
                   (hash-set! ht (nt-name nt) nv))
                 (define may-be-non-list? (may-be-non-list-pattern? (rhs-pattern rhs) non-list-nt-table))
                 (define may-be-list? (may-be-list-pattern? (rhs-pattern rhs) list-nt-table))
@@ -718,16 +717,16 @@ See match-a-pattern.rkt for more details
                             names)))
 
 (define (build-compiled-pattern proc names)
-  (make-compiled-pattern proc
+  (make-compiled-pattern 
+   proc
+   (null? names)
                          
-                         (null? names)
-                         
-                              ;; none of the names are duplicated
-                         (and (equal? names (remove-duplicates names))
-                              
-                              ;; no mismatch names
-                              (not (for/or ([name (in-list names)])
-                                     (pair? name))))))
+   ;; none of the names are duplicated
+   (and (equal? names (remove-duplicates names))
+        
+        ;; no mismatch names
+        (not (for/or ([name (in-list names)])
+                     (pair? name))))))
 
 ;; compile-pattern/cross? : compiled-lang pattern boolean -> (values compiled-pattern boolean)
 (define (compile-pattern/cross? clang pattern bind-names?)
@@ -765,6 +764,11 @@ See match-a-pattern.rkt for more details
          (apply values val)]
         [else
          (apply values compiled-cache)])))
+
+  ;; PS: Do we also have to worry about filling holes?
+  (define freshen (if bind-names?
+                      (compiled-lang-freshen clang)
+                      (lambda (exp) exp)))
   
   ;; invariant : if both result booleans are #f (ie, no-hole and no names), then
   ;;             the result (matching) function returns a boolean and has arity 1. 
@@ -807,17 +811,15 @@ See match-a-pattern.rkt for more details
        (define has-hole? (hash-ref has-hole-or-hide-hole-ht nt))
        (values
         (if has-hole?
-            (λ (possibly-binding-object-exp hole-info nesting-depth)
-              (define exp (destructure possibly-binding-object-exp))
+            (λ (exp hole-info nesting-depth)
               (match-nt (hash-ref clang-list-ht nt)
                         (hash-ref clang-ht nt)
-                        nt exp hole-info))
-            (λ (possibly-binding-object-exp)
-              (define exp (destructure possibly-binding-object-exp))
+                        nt (freshen exp) hole-info))
+            (λ (exp)
               (match-nt/boolean
                (hash-ref clang-list-ht nt)
                (hash-ref clang-ht nt)
-               nt exp)))
+               nt (freshen exp))))
         has-hole?
         #f
         '())]
@@ -955,30 +957,27 @@ See match-a-pattern.rkt for more details
        (values
         (cond
           [(not (or any-has-hole? any-has-hide-hole? (not (null? names))))
-           (λ (possibly-binding-object-exp)
-             (define exp (destructure possibly-binding-object-exp))
+           (λ (exp)
              (cond
-               [(list? exp) (match-list/boolean rewritten exp)]
+               [(list? exp) (match-list/boolean rewritten (freshen exp))]
                [else #f]))]
           [(= 0 repeats)
-           (λ (possibly-binding-object-exp hole-info nesting-depth)
-             (define exp (destructure possibly-binding-object-exp))
+           (λ (exp hole-info nesting-depth)
              (cond
                [(list? exp)
                 ;; shortcircuit: if the list isn't the right length, give up immediately.
                 (if (= (length exp) non-repeats)
-                    (match-list/no-repeats rewritten/coerced exp hole-info nesting-depth)
+                    (match-list/no-repeats rewritten/coerced (freshen exp) hole-info nesting-depth)
                     #f)]
                [else #f]))]
           [else
-           (λ (possibly-binding-object-exp hole-info nesting-depth)
-             (define exp (destructure possibly-binding-object-exp))
+           (λ (exp hole-info nesting-depth)
              (cond
                [(list? exp)
                 ;; shortcircuit: if the list doesn't have the right number of
                 ;; fixed parts, give up immediately
                 (if (>= (length exp) non-repeats)
-                    (match-list rewritten/coerced exp hole-info nesting-depth)
+                    (match-list rewritten/coerced (freshen exp) hole-info nesting-depth)
                     #f)]
                [else #f]))])
         any-has-hole?
@@ -2033,7 +2032,7 @@ See match-a-pattern.rkt for more details
  (bind? predicate/c)
  (bind-name (bind? . -> . symbol?))
  (bind-exp (bind? . -> . any/c))
- (compile-language (-> any/c (listof nt?) (hash/c symbol? uf-set?) any/c #|PS: be more specific|# compiled-lang?)))
+ (compile-language (-> any/c (listof nt?) (hash/c symbol? uf-set?) (-> any/c any/c) #|PS: be more specific|# compiled-lang?)))
 (provide compiled-pattern? 
          print-stats)
 

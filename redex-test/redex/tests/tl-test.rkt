@@ -2870,7 +2870,7 @@
     (test (< cpu 1000) #t))
 
 
-    
+    ;; test whether errortrace messes up top-level definitions... somehow
     (parameterize ([current-namespace (make-base-namespace)])
       (eval '(require errortrace))
       (eval '(require redex/reduction-semantics))
