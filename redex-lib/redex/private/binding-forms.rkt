@@ -33,7 +33,6 @@
 
 ;; These are to put markers inside Redex values
 (define shadow-sym (gensym 'shadow))
-
 (define rib-sym (gensym 'rib))
 
 
@@ -552,7 +551,7 @@
 ;; respects the beta's shadowing.
 ;; `renaming-info` indicates what to substitute the nonterminal references with.
 ;; Only the substitution is used; the name of the bfreshened value is ignored
-;; (along with `interp-beta`, this corresponds to 〚β〛(σ…) in the paper)
+;; (together with `interp-beta`, this function corresponds to 〚β〛(σ…) in the paper)
 (define (beta->subst-merger beta renaming-info)
   (define body
     (let loop ([beta beta])
@@ -710,6 +709,13 @@
   (define transcriber
     (transcribe-match bs extra-...ed-names
       [(imp sub-body-done beta)
+       ;; I thought that `rename-reference`ing this subterm of the current form was going to be a
+       ;; problem: `rename-reference` doesn't have any idea about the binding structure of a
+       ;; *partial* form, so it treats it naively. However! That binding structure has already been
+       ;; freshened by the time this `r-r` gets called. That means that all the names bound (at
+       ;; least, bound by *this* form, but binding structure below that *will be* understood by
+       ;; `r-r`) have been renamed to fresh names (relative to the domain of this renaming), and
+       ;; so will be unaffected: just what we want.
        #`,(rename-references #,(beta->subst-merger beta renaming-info)
                              (term #,sub-body-done))]
       [nt (match
@@ -786,6 +792,15 @@
                    (,uq (rename-references
                          (interp-beta (term (,shad ,i-σ ,ie-σ))) ,_)))))
        (,uq (interp-beta (term (,shad ,e-σ ,ie-σ)))))))
+
+ #|
+ Maybe test this one, if it's not too tedious.
+
+ (define embedded-lambda-bspec 
+   (surface-bspec->bspec #`((embedded-lambda (x_0) (((any_1) expr_1 #:refers-to any_1) expr_0) #:refers-to x_0) #:exports nothing) #`big-language #`embedded-lambda))
+
+ (pretty-print (syntax->datum (freshener embedded-lambda-bspec #`top-level?)))
+|#
  )
 
 (define (noop-substituter bs)

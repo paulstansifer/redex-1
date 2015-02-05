@@ -29,9 +29,7 @@
          (lambda (stx) (syntax-case stx ()
                          [(test-phase-1-fn) (fn phase-0-args ...)]))])
      (test-phase-1-fn-helper)))
-
  
-
  (define-language big-language
    (expr (expr expr)
          (lambda (x) expr)
@@ -57,7 +55,8 @@
     (let3* ((x_a expr_a) (x_b expr_b #:refers-to x_a) 
             (x_c expr_c #:refers-to (shadow x_b x_a)))
            expr_body #:refers-to (shadow x_c x_b x_a))
-    (siamese-lambda ((x ...) expr #:refers-to (rib x ...)) ...))
+    (siamese-lambda ((x ...) expr #:refers-to (rib x ...)) ...)
+    (embedded-lambda (x) (((x) expr) expr) ))
 
    ;; ==== reference-rename ====
    (check-equal?
@@ -72,6 +71,21 @@
     `(ieie a b c
            (aa (bb (cc (dd (ee (ff g))))))
            (aa (bb (cc (dd (ee (ff g))))))))
+
+   (check-equal?
+    (rename-references `((a aa))
+                       `(cl a a no-cl))
+    `(cl a aa no-cl))
+
+   (check-equal?
+    (rename-references `((a aa))
+                       `((((cl a a no-cl)))))
+    `((((cl a aa no-cl)))))
+
+   (check-equal?
+    (rename-references `((a aa))
+                    `(cl a (a (lambda (a) a)) no-cl))
+    `(cl a (aa (lambda (a) a)) no-cl))
 
    
    ;; ==== binder-rename ====
@@ -130,7 +144,10 @@
     (let3* ((x_a expr_a) (x_b expr_b #:refers-to x_a) 
             (x_c expr_c #:refers-to (shadow x_b x_a)))
            expr_body #:refers-to (shadow x_c x_b x_a))
-    (siamese-lambda ((x ...) expr #:refers-to (rib x ...)) ...))
+    (siamese-lambda ((x ...) expr #:refers-to (rib x ...)) ...)
+    ;; PS: should the user be able to leave the different `expr`s unsubscribed?
+    ;; The result might be unexpected if we interpret that literally
+    (embedded-lambda (x_0) (((any_1) expr_1 #:refers-to any_1) expr_0) #:refers-to x_0))
 
 
  (check-match (big-freshener `(lambda (x) x))
@@ -144,14 +161,16 @@
    (match (d v)
           [(list sub-v ...) (map (lambda (sv) (totally-destructure d sv)) sub-v)]
           [atom atom]))
-
+ 
+ (define (all-distinct? . lst)
+    (equal? lst (remove-duplicates lst)))
 
  (check-match
   (totally-destructure 
    big-freshener
    `(let* (cl a 4 (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c))))
   `(let* (cl ,aa 4 (cl ,bb (,aa 5) (cl ,cc (,bb (,aa 6)) no-cl))) (,aa (,bb ,cc)))
-  (and (not (equal? 'a aa)) (not (equal? 'b bb)) (not (equal? 'c cc))))
+  (all-distinct? 'a aa 'b bb 'c cc))
 
  ;; check that shadowing works properly
  (check-match
@@ -161,6 +180,36 @@
   ` (let* (cl ,a 1 (cl ,b ,a no-cl)) ,b)
   (not (equal? a b)))
 
+ ;; test that renamings pay attention to the structure of what they traverse
+ (check-match
+  (totally-destructure
+   big-freshener
+   `(let* (cl a ((lambda (a) a) a) (cl x ((lambda (a) a) a) no-cl)) a))
+  ` (let* (cl ,a1 ((lambda (,a2) ,a2) a) (cl ,x ((lambda (,a3) ,a3) ,a2) no-cl)) ,a1)
+  (all-distinct? a1 a2 a3 'a))
+ 
+ ;; test that nested structure doesn't get lost
+
+ (check-match
+  (totally-destructure
+   big-freshener
+   `(embedded-lambda (a) (((b) (a b)) (a b))))
+  ` (embedded-lambda (,aa) (((,bb) (,aa ,bb)) (,aa b)))
+  (all-distinct? aa bb 'a 'b))
+
+ (check-match
+  (totally-destructure
+   big-freshener
+   `(embedded-lambda (a) (((a) a) a)))
+  ` (embedded-lambda (,aa) (((,bb) ,bb) ,aa))
+  (all-distinct? aa bb 'a))
+
+ (check-match
+  (totally-destructure
+   big-freshener
+   `(embedded-lambda (a) ((((cl a x no-cl)) a) a)))
+  ` (embedded-lambda (,aa) ((((cl ,bb x no-cl)) ,bb) ,aa))
+  (all-distinct? aa bb 'a))
 
  (check-match
   (totally-destructure
@@ -217,10 +266,7 @@
     [(subst (any ...) x_old e_new)
      ((subst any x_old e_new) ...)]
     [(subst any x_old e_new) any])
-
-
-  (define (all-distinct? . lst)
-    (equal? lst (remove-duplicates lst)))
+  
   
   (check-match
    (term (subst (lambda (x) (y (lambda (y) (y y)))) y (lambda (z) (z x))))
