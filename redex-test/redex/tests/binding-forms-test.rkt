@@ -107,9 +107,10 @@
                     `(cl a 4 (cl b (a 5) (cl c (b (a 6)) no-cl))))
     `(cl aa 4 (cl b (a 5) (cl cc (b (a 6)) no-cl))))
 
-
-
-   ;; (need more tests here!)
+   (check-equal?
+    (rename-binders `((a aa))
+                    `(cl a (lambda (a) a) no-cl))
+    `(cl aa (lambda (a) a) no-cl))
 
    ;; ==== freshen/rec ====
 

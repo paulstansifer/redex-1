@@ -354,7 +354,7 @@
 
 ;; returns all names with depth greater than 1, with their depths decremented
 (define (repeated-names-in almost-transcriber name-list)
-  (syntax-case almost-transcriber (rename-references)
+  (syntax-case almost-transcriber ()
     [(fst . rst)
      (dedupe-names (append (repeated-names-in #`fst name-list)
                            (repeated-names-in #`rst name-list)))]
@@ -396,9 +396,15 @@
               ([x ,x-normal] [y ,y-normal])
               (term (x (y)))))
           (term (x ,dotdotdot)) (term (y ,dotdotdot)))))
-
  )
 
+(define-syntax-rule (wrap-with-renaming-info 
+                     bs renaming-info
+                     ((nt bfreshened σ depth) clause-body)
+                     whole-body)
+  #`(#,(redex-let*-name) #,(bspec-lang-name bs)
+     #,(map (match-lambda [`(,nt ,bfreshened ,σ ,depth) clause-body]) renaming-info)
+     whole-body))
 
 
 
@@ -600,70 +606,56 @@
          [1 #`(map #,stx-fn #,stx-arg)]
          [_ #`(map (lambda (e) #,(wrap-map stx-fn #`e (- depth 1))) #,stx-arg)]))
 
-;; exported-nts is a list of nonterminals
-;; This returns a list of clauses for `redex-let*`.
-(define (bfreshener renaming-info exported-nts top-level?-name)
-  (map
-   (match-lambda
-    [`(,ported-nt ,bfreshened ,vpat ,depth)
-     #`[#,(wrap... #`(#,bfreshened #,vpat) depth)
-        ;; Is the name being exported to the top level?
-        (if (xor #,(boolify (has-name? exported-nts ported-nt)) #,top-level?-name)
-            #,(wrap-map #`freshen/rec #`(term #,(wrap... ported-nt depth)) depth)
-            ;; If not, then the names are either free (and must not be
-            ;; renamed), or they will not become free by this destructuring
-            ;; (and thus don't need to be renamed)
 
-            ;; to participate in shadowing correctly without changing anything
-            #,(wrap-map #`noop-binder-substitution-plus-orig 
-                        #`(term #,(wrap... ported-nt depth)) depth))]])
-   renaming-info))
+
+;; exported-nts is a list of nonterminals
+;; This returns a clause for `redex-let*`.
+(define (bfreshen-nt top-level?-name exported-nts ported-nt bfreshened-name σpat depth)
+  #`[#,(wrap... #`(#,bfreshened-name #,σpat) depth)
+     ;; Is the name being exported to the top level?
+     (if (xor #,(boolify (has-name? exported-nts ported-nt)) #,top-level?-name)
+         #,(wrap-map #`freshen/rec #`(term #,(wrap... ported-nt depth)) depth)
+         ;; If not, then the names are either free (and must not be
+         ;; renamed), or they will not become free by this destructuring
+         ;; (and thus don't need to be renamed)
+         
+         ;; to participate in shadowing correctly without changing anything
+         #,(wrap-map #`noop-binder-substitution-plus-orig 
+                     #`(term #,(wrap... ported-nt depth)) depth))])
 
 (module+ phase-1-test
-         (check-equal?
-          (map syntax->datum (bfreshener
-                              `((,#'b1 b1_ren σ_b1 0)
-                                (,#'b2 b2_ren σ_b2 0))
-                              `((,#'b1 0))
-                              #`tl?))
-          '([(b1_ren σ_b1)
-             (if (xor #t tl?)
-                 (freshen/rec (term b1))
-                 (noop-binder-substitution-plus-orig (term b1)))]
-            [(b2_ren σ_b2)
-             (if (xor #f tl?)
-                 (freshen/rec (term b2))
-                 (noop-binder-substitution-plus-orig (term b2)))]))
+ (check-equal?
+  (syntax->datum (bfreshen-nt `tl? `((,#'b1 0)) #`b1 `b1_ren `σ_b1 0))
+  `[(b1_ren σ_b1)
+    (if (xor #t tl?)
+        (freshen/rec (term b1))
+        (noop-binder-substitution-plus-orig (term b1)))])
+ (check-equal?
+  (syntax->datum (bfreshen-nt `tl? `((,#'b1 0))  #`b2 `b2_ren `σ_b2 0))
+  `[(b2_ren σ_b2)
+    (if (xor #f tl?)
+        (freshen/rec (term b2))
+        (noop-binder-substitution-plus-orig (term b2)))])
 
-         (check-equal?
-          (map syntax->datum (bfreshener
-                              `((,#'b0 b0_ren σ_b0 0)
-                                (,#'b1 b1_ren σ_b1 1)
-                                (,#'b2 b2_ren σ_b2 2)
-                                (,#'b3 b3_ren σ_b3 3))
-                              `()
-                              #`tl?))
-          '([(b0_ren σ_b0)
-             (if (xor #f tl?)
-                 (freshen/rec (term b0))
-                 (noop-binder-substitution-plus-orig (term b0)))]
-            [((b1_ren σ_b1) ...)
-             (if (xor #f tl?)
-                 (map freshen/rec (term (b1 ...)))
-                 (map noop-binder-substitution-plus-orig (term (b1 ...))))]
-            [(((b2_ren σ_b2) ...) ...)
-             (if (xor #f tl?)
-                 (map (lambda (e) (map freshen/rec e)) (term ((b2 ...) ...)))
-                 (map (lambda (e) (map noop-binder-substitution-plus-orig e)) 
-                      (term ((b2 ...) ...))))]
-            [((((b3_ren σ_b3) ...) ...) ...)
-             (if (xor #f tl?)
-                 (map (lambda (e) 
-                        (map (lambda (e) (map freshen/rec e)) e)) (term (((b3 ...) ...) ...)))
-                 (map (lambda (e) 
-                        (map (lambda (e) (map noop-binder-substitution-plus-orig e)) e))
-                      (term (((b3 ...) ...) ...))))]))
-         )
+ (check-equal?
+  (syntax->datum (bfreshen-nt `tl? `() #'b1 `b1_ren `σ_b1 1))
+  `[((b1_ren σ_b1) ...)
+    (if (xor #f tl?)
+        (map freshen/rec (term (b1 ...)))
+        (map noop-binder-substitution-plus-orig (term (b1 ...))))])
+ (check-equal?
+  (syntax->datum (bfreshen-nt `tl? `() #'b2 `b2_ren `σ_b2 2))
+  `[(((b2_ren σ_b2) ...) ...)
+    (if (xor #f tl?)
+        (map (lambda (e) (map freshen/rec e)) (term ((b2 ...) ...)))
+        (map (lambda (e) (map noop-binder-substitution-plus-orig e)) (term ((b2 ...) ...))))])
+ (check-equal?
+  (syntax->datum (bfreshen-nt `tl? `() #'b3 `b3_ren `σ_b3 3))
+  `[((((b3_ren σ_b3) ...) ...) ...)
+    (if (xor #f tl?)
+        (map (lambda (e) (map (lambda (e) (map freshen/rec e)) e)) (term (((b3 ...) ...) ...)))
+        (map (lambda (e) (map (lambda (e) (map noop-binder-substitution-plus-orig e)) e))
+             (term (((b3 ...) ...) ...))))]))
 
 ;; renaming-info is an assoc:
 ;; (nonterminal reference, freshened version, "name" of its renaming, depth)
@@ -736,13 +728,16 @@
                    ;; a perfectly reasonable language, which their clients
                    ;; will use in this way, so it should work right.
                    (first (freshen/rec (term #,nt))))])]))
+  (define exported-nts (bspec-exported-nts bs))
   
-  #`(#,(redex-let*-name) #,(bspec-lang-name bs)
-    ;; define the renamings we'll use:
-      (#,@(bfreshener renaming-info (bspec-exported-nts bs) top-level?-name))
-                
-      `(, #,transcriber ;; new version of `v`
-        , #,(beta->subst-merger (bspec-export-beta bs) renaming-info)))) ;; exports
+  (wrap-with-renaming-info
+   bs renaming-info
+   ((nt bfreshened-name σ depth) (bfreshen-nt top-level?-name exported-nts
+                                              nt bfreshened-name σ depth))
+   `(, #,transcriber ;; new version of `v`
+       , #,(beta->subst-merger (bspec-export-beta bs) renaming-info)))) ;; exports
+
+      
 
 ;; top-level?-name is expected to be #`#t or #`#f
 (define (vanilla-freshener-clauses top-level?-syn)
@@ -781,8 +776,8 @@
  (check-match
   (syntax->datum (freshener ieie-bspec #`top-level?))
   `(fake-redex-let* ,_ ([(,ie-ren ,ie-σ) ,_]
-                   [(,i-ren ,i-σ) ,_] 
-                   [(,e-ren ,e-σ) ,_])
+                        [(,i-ren ,i-σ) ,_] 
+                        [(,e-ren ,e-σ) ,_])
      `((,uq (term (,bf-name
                    ,i-ren
                    ,e-ren
@@ -806,17 +801,11 @@
 (define (noop-substituter bs)
   (define renaming-info (make-renaming-info (bspec-exported-nts bs)))
 
-  (define σ-clauses
-    (map
-     (match-lambda
-      [`(,nt ,_ ,σ ,depth)
-       #`[#,(wrap... σ depth)
-          (term #,(wrap... #` ,(noop-binder-substitution (term #,nt)) depth))]])
-     renaming-info))
-
-  #`(#,(redex-let*-name) #,(bspec-lang-name bs)
-                (#,@σ-clauses)
-                #,(beta->subst-merger (bspec-export-beta bs) renaming-info)))
+  (wrap-with-renaming-info 
+   bs renaming-info
+   ((nt _ σ depth) 
+    #`[#,(wrap... σ depth) (term #,(wrap... #` ,(noop-binder-substitution (term #,nt)) depth))])
+   #,(beta->subst-merger (bspec-export-beta bs) renaming-info)))
 
 (define (vanilla-noop-substituter)
   `(, #`[(any (... ...)) `()]
@@ -926,7 +915,7 @@
                   rename-references rename-binders
                   ))
 
-;; == phase 0 tests ==
+;; == run tests ==
 
 (module+ test
  ;; actually run the phase 1 tests, now that we're in the "real" test module
