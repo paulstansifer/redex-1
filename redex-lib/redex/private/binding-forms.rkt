@@ -807,7 +807,9 @@
   (wrap-with-renaming-info 
    bs renaming-info
    ((nt _ σ depth) 
-    #`[#,(wrap... σ depth) (term #,(wrap... #` ,(noop-binder-substitution (term #,nt)) depth))])
+    #`[#,(wrap... σ depth)
+       #,(wrap-map #`noop-binder-substitution
+                   #`(term #,(wrap... nt depth)) depth)])
    (beta->subst-merger (bspec-export-beta bs) renaming-info)))
 
 (define (vanilla-noop-substituter)
@@ -827,9 +829,9 @@
  (check-match
   (syntax->datum (noop-substituter ieie-bspec))
   `(fake-redex-let* ,_
-               ([,e-σ (term (,uq (noop-binder-substitution (term ,e))))]
-                [,ie-σ (term (,uq (noop-binder-substitution (term ,ie))))])
-               (interp-beta (term (,shadow ,e-σ ,ie-σ))))))
+     ([,e-σ (noop-binder-substitution (term ,e))]
+      [,ie-σ (noop-binder-substitution (term ,ie))])
+     (interp-beta (term (,shadow ,e-σ ,ie-σ))))))
 
 
 (module+ phase-1-test

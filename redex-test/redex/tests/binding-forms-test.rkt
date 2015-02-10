@@ -38,14 +38,12 @@
          (let* clauses expr)
          (let3* ((x_a expr_a) (x_b expr_b) (x_c expr_c)) expr_body)
          (siamese-lambda ((x ...) expr) ...)
+         (pile-o-binders x ...)
          x
          number)
    (clauses (cl x expr clauses)
             no-cl)
    (x variable-not-otherwise-mentioned))
-
- ;; TODO: test things that export from a `...`ed nt. I think 
- ;; noop substitutions are broken there!
  
  (setup-binding-forms big-language
    ((lambda (x) expr #:refers-to x)
@@ -58,7 +56,8 @@
             (x_c expr_c #:refers-to (shadow x_b x_a)))
            expr_body #:refers-to (shadow x_c x_b x_a))
     (siamese-lambda ((x ...) expr #:refers-to (rib x ...)) ...)
-    (embedded-lambda (x) (((x) expr) expr) ))
+    (embedded-lambda (x) (((x) expr) expr) )
+    (pile-o-binders x ...) #:exports (rib x ...))
 
    ;; ==== reference-rename ====
    (check-equal?
@@ -88,6 +87,12 @@
     (rename-references `((a aa))
                     `(cl a (a (lambda (a) a)) no-cl))
     `(cl a (aa (lambda (a) a)) no-cl))
+
+   ;; ==== noop-binder-substitution ====
+
+   (check-match
+    (noop-binder-substitution `(cl a b no-cl))
+    `((no-cl no-cl) (a a)))
 
    ;; ==== freshen/rec ====
 
@@ -125,7 +130,8 @@
     (siamese-lambda ((x ...) expr #:refers-to (rib x ...)) ...)
     ;; PS: should the user be able to leave the different `expr`s unsubscribed?
     ;; The result might be unexpected if we interpret that literally
-    (embedded-lambda (x_0) (((any_1) expr_1 #:refers-to any_1) expr_0) #:refers-to x_0))
+    (embedded-lambda (x_0) (((any_1) expr_1 #:refers-to any_1) expr_0) #:refers-to x_0)
+    (pile-o-binders x ...) #:exports (rib x ...))
 
 
  (check-match (big-freshener `(lambda (x) x))
@@ -201,8 +207,7 @@
   (and (not (equal? 'a aa)) (not (equal? 'b bb)) (not (equal? 'c cc))))
 
 
- (check-match
-  (totally-destructure big-freshener `(va-lambda (a b c) (a (b (c d)))))
+ (check-match  (totally-destructure big-freshener `(va-lambda (a b c) (a (b (c d)))))
   `(va-lambda (,a ,b ,c) (,a (,b (,c d))))
   (and (not (eq? a b))
        (not (eq? b c))
