@@ -36,7 +36,7 @@
 (define rib-sym (gensym 'rib))
 
 
-(struct language-functions (freshen/rec noop-bind-subst ref-rename bnd-rename))
+(struct language-functions (freshen/rec noop-bind-subst ref-rename))
 
 (define cur-language-fns (make-parameter #f))
 
@@ -54,9 +54,6 @@
 
 (define (rename-references σ v)
   ((language-functions-ref-rename (cur-language-fns)) σ v))
-
-(define (rename-binders σ v)
-  ((language-functions-bnd-rename (cur-language-fns)) σ v))
  
 ;; this also overs most of the file; we won't indent it either
 (begin-for-syntax
@@ -322,7 +319,6 @@
       #`(#,(wrap... stx (- depth 1)) (... ...))))
 ;; `(... ...)` means "a plain `...` in the transcription output" 
 
-
 ;; We can't wrap `unquote`s in `...` with impunity, so we'll essentially
 ;; do MBE manually. We'll wrap a `...` around the names that drive the
 ;; repetition and feed them as arguments to a `map`.
@@ -349,6 +345,12 @@
          #,@(map (match-lambda [`(,rep-name ,depth)
                                 #`(term #,(wrap... rep-name (+ depth 1)))])
                  sub-repeated-names))))
+
+(define (wrap-map stx-fn stx-arg depth)
+  (match depth
+         [0 #`(#,stx-fn #,stx-arg)]
+         [1 #`(map #,stx-fn #,stx-arg)]
+         [_ #`(map (lambda (e) #,(wrap-map stx-fn #`e (- depth 1))) #,stx-arg)]))
 
    
 
@@ -404,7 +406,7 @@
                      whole-body)
   #`(#,(redex-let*-name) #,(bspec-lang-name bs)
      #,(map (match-lambda [`(,nt ,bfreshened ,σ ,depth) clause-body]) renaming-info)
-     whole-body))
+     #,whole-body))
 
 
 
@@ -497,18 +499,45 @@
                (map (lambda (x) `(,x 0)) `(x_2 x_444 x_1 x_9 x_3)))
  )
 
-;; == naive renaming operations ==
-;; TODO: make these un-naive; naive reference/binder renaming breaks alpha-equivalence
+;; == reference renaming  ==
+
+;; Names in `renaming-info` that get referred to (potenially under `...`) need to 
+;; be handed off to `transcribe-match`.
+(define (extra-...ed-names renaming-info include-bfreshened?)
+  (append*
+   (map (match-lambda 
+         [`(,_ ,bfreshened-nt ,σ-name ,depth) 
+          (syntax-case σ-name ()
+            [((from-name to-name) dotdotdot)
+             `(,@(if include-bfreshened? 
+                   `((,bfreshened-nt ,depth))
+                   `()) 
+               ;; σs have a built-in `...` that needs to be taken into account
+               (,#`from-name ,(+ depth 1)) (,#`to-name ,(+ depth 1)))])])
+        renaming-info)))
 
 (define (reference-renamer bs σ-name)
-  (transcribe-match bs '()
-    [(imp sub-body-done beta) sub-body-done]
-    [atom (if (has-name? (bspec-ported-nts bs) atom)
-              #` ,(if (symbol? (term #,atom))
-                      (term #,atom)
-                      (rename-references #,σ-name (term #,atom)))
-              #` ,(rename-references #,σ-name (term #,atom)))]))
+  (define renaming-info (make-renaming-info (bspec-imported-nts bs)))
 
+  (wrap-with-renaming-info
+   bs renaming-info
+   ((nt _ σ depth) 
+    #`[#,(wrap... σ depth)
+       #,(wrap-map #`noop-binder-substitution
+                   #`(term #,(wrap... nt depth)) depth)])
+   (transcribe-match bs (extra-...ed-names renaming-info #f)
+     [(imp sub-body-done beta) 
+      #` ,(let ([#,σ-name ;; rebind this name to restrict it
+                 (interp-beta `(,shadow-sym
+                                , #,(beta->subst-merger beta renaming-info) ;; don't touch bound names
+                                  , #,σ-name))]) ;; the rest of the substitution stays
+            (term #,sub-body-done))]
+     [atom (if (has-name? (bspec-ported-nts bs) atom)
+               #` ,(if (symbol? (term #,atom))
+                       (term #,atom)
+                       (rename-references #,σ-name (term #,atom)))
+                  #` ,(rename-references #,σ-name (term #,atom)))])))
+;; TODO: fix `noop-...` in a similar way
 
 (define (vanilla-reference-renamer σ-name)
   `(, #`[(any (... ...))
@@ -520,32 +549,22 @@
            [#f (term variable)])]
     , #`[any (term any)]))
 
-(define (binder-renamer bs σ-name)
-  (transcribe-match bs '()
-    [(imp sub-body-done beta) sub-body-done]
-    [atom
-     #` ,(if (symbol? (term #,atom))
-             #,(if (has-name? (bspec-ported-nts bs) atom)
-                   #`(match (assoc (term #,atom) #,σ-name)
-                            [`(,_ ,new-atom) new-atom]
-                            [#f (term #,atom)])
-                   #`(term #,atom))
-             (rename-binders #,σ-name (term #,atom)))]))
-
-
-(define (vanilla-binder-renamer σ-name)
-  `(, #`[(any (... ...)) (map (lambda (elt) (rename-binders #,σ-name elt))
-                              (term (any (... ...))))]
-    ;; symbols should only be renamed if mentioned, and nothing
-    ;; is mentioned outside of binding forms
-    , #`[any (term any)]))
-
 
 (module+ phase-1-test
- (check-equal?
+         
+
+ (check-match
   (syntax->datum (reference-renamer lambda-bspec #`σ))
-  '(term (lambda (,(if (symbol? (term x)) (term x) (rename-references σ (term x))))
-     ,(rename-references σ (term expr)))))
+  `(fake-redex-let* ,_
+     ([,noop-σ-for-x ,_])
+     (term (lambda ((,uq (if (symbol? (term x)) 
+                             (term x) 
+                             (rename-references σ (term x)))))
+             (,uq (let
+                      ([σ (interp-beta (quasiquote ((,uq shadow-sym)
+                                                    (,uq (interp-beta (term ,noop-σ-for-x)))
+                                                    (,uq σ))))])
+                    (term (,uq (rename-references σ (term expr))))))))))
 
  )
 
@@ -598,13 +617,6 @@
 ;; Motto: Freshen a binder iff it is exported to the top level, but no further.
 ;; Every import needs to be renamed according to the sets of binders it imports
 
-
-
-(define (wrap-map stx-fn stx-arg depth)
-  (match depth
-         [0 #`(#,stx-fn #,stx-arg)]
-         [1 #`(map #,stx-fn #,stx-arg)]
-         [_ #`(map (lambda (e) #,(wrap-map stx-fn #`e (- depth 1))) #,stx-arg)]))
 
 
 
@@ -688,18 +700,9 @@
   ;; (we don't know what Redex language we're in), so we need to
   ;; call the renaming by a pattern like `((variable_from-98 variable_to-98) ...)' 
   (define renaming-info (make-renaming-info (bspec-ported-nts bs)))
-
-  (define extra-...ed-names
-    (append*
-     (map (match-lambda 
-           [`(,_ ,bfreshened-nt ,σ-name ,depth) 
-            (syntax-case σ-name ()
-              [((from-name to-name) dotdotdot)
-               `((,bfreshened-nt ,depth) (,#`from-name ,(+ depth 1)) (,#`to-name ,(+ depth 1)))])])
-          renaming-info)))
   
   (define transcriber
-    (transcribe-match bs extra-...ed-names
+    (transcribe-match bs (extra-...ed-names renaming-info #t)
       [(imp sub-body-done beta)
        ;; I thought that `rename-reference`ing this subterm of the current form was going to be a
        ;; problem: `rename-reference` doesn't have any idea about the binding structure of a
@@ -734,8 +737,8 @@
    bs renaming-info
    ((nt bfreshened-name σ depth) (bfreshen-nt top-level?-name exported-nts
                                               nt bfreshened-name σ depth))
-   `(, #,transcriber ;; new version of `v`
-       , #,(beta->subst-merger (bspec-export-beta bs) renaming-info)))) ;; exports
+   #` `(, #,transcriber ;; new version of `v`
+          , #,(beta->subst-merger (bspec-export-beta bs) renaming-info)))) ;; exports
 
       
 
@@ -805,7 +808,7 @@
    bs renaming-info
    ((nt _ σ depth) 
     #`[#,(wrap... σ depth) (term #,(wrap... #` ,(noop-binder-substitution (term #,nt)) depth))])
-   #,(beta->subst-merger (bspec-export-beta bs) renaming-info)))
+   (beta->subst-merger (bspec-export-beta bs) renaming-info)))
 
 (define (vanilla-noop-substituter)
   `(, #`[(any (... ...)) `()]
@@ -871,10 +874,6 @@
         ;; language-functions-ref-rename
         (lambda (σ v)
           (#,(invocation-match reference-renamer vanilla-reference-renamer
-                               bses lang-name #`σ) v))
-        ;; language-functions-bnd-rename
-        (lambda (σ v)
-          (#,(invocation-match binder-renamer vanilla-binder-renamer
                                bses lang-name #`σ) v)))])
      #,body))
 
@@ -911,9 +910,7 @@
          (provide (for-syntax setup-functions parse-binding-forms
                               binding-info->freshener
                               redex-let*-name term-match/single-name)
-                  freshen/rec noop-binder-substitution
-                  rename-references rename-binders
-                  ))
+                  freshen/rec noop-binder-substitution rename-references))
 
 ;; == run tests ==
 

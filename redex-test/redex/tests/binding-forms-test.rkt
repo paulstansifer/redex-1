@@ -44,6 +44,8 @@
             no-cl)
    (x variable-not-otherwise-mentioned))
 
+ ;; TODO: test things that export from a `...`ed nt. I think 
+ ;; noop substitutions are broken there!
  
  (setup-binding-forms big-language
    ((lambda (x) expr #:refers-to x)
@@ -60,8 +62,8 @@
 
    ;; ==== reference-rename ====
    (check-equal?
-    (rename-references `((a aa)) `(lambda (a) (a b)))
-    `(lambda (a) (aa b)))
+    (rename-references `((a aa)) `(a (lambda (a) (a b))))
+    `(aa (lambda (a) (a b))))
    
    (check-equal?
     (rename-references `((a aa) (b bb) (c cc) (d dd) (e ee) (f ff))
@@ -69,8 +71,8 @@
                               (a (b (c (d (e (f g))))))
                               (a (b (c (d (e (f g))))))))
     `(ieie a b c
-           (aa (bb (cc (dd (ee (ff g))))))
-           (aa (bb (cc (dd (ee (ff g))))))))
+           (a (bb (c (dd (ee (ff g))))))
+           (a (bb (c (dd (ee (ff g))))))))
 
    (check-equal?
     (rename-references `((a aa))
@@ -86,31 +88,6 @@
     (rename-references `((a aa))
                     `(cl a (a (lambda (a) a)) no-cl))
     `(cl a (aa (lambda (a) a)) no-cl))
-
-   
-   ;; ==== binder-rename ====
-   (check-equal?
-    (rename-binders `((x xx) (b bb) (c cc)) `(lambda (x) (a b)))
-    `(lambda (xx) (a b)))
-
-   (check-equal?
-    (rename-binders `((a aa) (b bb) (c cc) (d dd) (e ee) (f ff))
-                    `(ieie a b c
-                           (a (b (c (d (e (f g))))))
-                           (a (b (c (d (e (f g))))))))
-    `(ieie aa bb cc
-           (a (b (c (d (e (f g))))))
-           (a (b (c (d (e (f g))))))))
-
-   (check-equal?
-    (rename-binders `((a aa) (c cc))
-                    `(cl a 4 (cl b (a 5) (cl c (b (a 6)) no-cl))))
-    `(cl aa 4 (cl b (a 5) (cl cc (b (a 6)) no-cl))))
-
-   (check-equal?
-    (rename-binders `((a aa))
-                    `(cl a (lambda (a) a) no-cl))
-    `(cl aa (lambda (a) a) no-cl))
 
    ;; ==== freshen/rec ====
 
@@ -185,8 +162,10 @@
  (check-match
   (totally-destructure
    big-freshener
-   `(let* (cl a ((lambda (a) a) a) (cl x ((lambda (a) a) a) no-cl)) a))
-  ` (let* (cl ,a1 ((lambda (,a2) ,a2) a) (cl ,x ((lambda (,a3) ,a3) ,a2) no-cl)) ,a1)
+   `(let* (cl a ((lambda (a) a) a) 
+              (cl x ((lambda (a) a) a) no-cl)) a))
+  ` (let* (cl ,a1 ((lambda (,a2) ,a2) a) 
+              (cl ,x ((lambda (,a3) ,a3) ,a1) no-cl)) ,a1)
   (all-distinct? a1 a2 a3 'a))
  
  ;; test that nested structure doesn't get lost
