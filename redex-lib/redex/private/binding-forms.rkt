@@ -928,7 +928,10 @@
 
 
 
-
+;; TODO: worry about the interaction between the parameter that prevents infinite
+;; regress and pattern side-conditions that that might do unrelated binder-aware stuff.
+;; Possibly just forbid side-conditions in binder patterns entirely, as they
+;; are being invoked "behind-the-scenes" anyways?
 
 ;; TODO: worry about things like `(rib a_!_1)`
 

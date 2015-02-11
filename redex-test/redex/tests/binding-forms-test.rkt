@@ -256,4 +256,6 @@
   (check-match
    (term (subst (lambda (x) (y (lambda (y) (y y)))) y (lambda (z) (z x))))
    `(lambda (,x) ((lambda (z) (z x)) (lambda (,y) (,y ,y))))
-   (all-distinct? x y `x `y)))
+   (all-distinct? x y `x `y))
+
+  )

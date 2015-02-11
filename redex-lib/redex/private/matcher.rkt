@@ -728,6 +728,31 @@ See match-a-pattern.rkt for more details
         (not (for/or ([name (in-list names)])
                      (pair? name))))))
 
+(define (pattern-might-destructure? pattern)
+  (match-a-pattern pattern
+    [`any #f]
+    [`number #f]
+    [`string #f]
+    [`natural #f]
+    [`integer #f]
+    [`real #f]
+    [`boolean #f]
+    [`variable #f]
+    [`(variable-except ,var ...) #f]
+    [`(variable-prefix ,var) #f]
+    [`variable-not-otherwise-mentioned #f]
+    [`hole #f]
+    [`(nt ,var) #f]
+    [`(name ,var ,pat) (pattern-might-destructure? pat)]
+    [`(mismatch-name ,var ,pat) (pattern-might-destructure? pat)]
+    [`(in-hole ,pat1 ,pat2) ;; not that there's much chance that `pat1` isn't a list
+     (or (pattern-might-destructure? pat1) (pattern-might-destructure? pat2))]
+    [`(hide-hole ,pat) (pattern-might-destructure? pat)]
+    [`(side-condition ,pat ,_ ,_) (pattern-might-destructure? pat)]
+    [`(cross ,_) #t] ;; check with Robby about this
+    [`(list ,lpat ...) #t]
+    [(? (compose not pair?)) #f]))
+
 ;; compile-pattern/cross? : compiled-lang pattern boolean -> (values compiled-pattern boolean)
 (define (compile-pattern/cross? clang pattern bind-names?)
   (define clang-ht (compiled-lang-ht clang))
@@ -746,7 +771,22 @@ See match-a-pattern.rkt for more details
     (let ([compiled-cache (hash-ref compiled-pattern-cache pattern uniq)])
       (cond 
         [(eq? compiled-cache uniq)
-         (define-values (compiled-pattern has-hole? has-hide-hole? names) (true-compile-pattern pattern))
+         (define-values (compiled-pattern-without-freshening has-hole? has-hide-hole? names) (true-compile-pattern pattern))
+
+         ;; If necessary, freshen the value before matching it
+         (define compiled-pattern
+           (cond
+            [(not (pattern-might-destructure? pattern))
+             compiled-pattern-without-freshening]
+            [(equal? (procedure-arity compiled-pattern-without-freshening) 3)
+             (lambda (exp hole-info nesting-depth)
+                     (compiled-pattern-without-freshening
+                      ((compiled-lang-freshen clang) exp) hole-info nesting-depth))]
+            [else
+             (lambda (exp) (compiled-pattern-without-freshening
+                            ((compiled-lang-freshen clang) exp)))]))
+         
+         
          (unless (equal? (if (or has-hole? has-hide-hole? (not (null? names)))
                              3
                              1)
@@ -764,11 +804,6 @@ See match-a-pattern.rkt for more details
          (apply values val)]
         [else
          (apply values compiled-cache)])))
-
-  ;; PS: Do we also have to worry about filling holes?
-  (define freshen (if bind-names?
-                      (compiled-lang-freshen clang)
-                      (lambda (exp) exp)))
   
   ;; invariant : if both result booleans are #f (ie, no-hole and no names), then
   ;;             the result (matching) function returns a boolean and has arity 1. 
@@ -814,12 +849,12 @@ See match-a-pattern.rkt for more details
             (λ (exp hole-info nesting-depth)
               (match-nt (hash-ref clang-list-ht nt)
                         (hash-ref clang-ht nt)
-                        nt (freshen exp) hole-info))
+                        nt exp hole-info))
             (λ (exp)
               (match-nt/boolean
                (hash-ref clang-list-ht nt)
                (hash-ref clang-ht nt)
-               nt (freshen exp))))
+               nt exp)))
         has-hole?
         #f
         '())]
@@ -959,7 +994,7 @@ See match-a-pattern.rkt for more details
           [(not (or any-has-hole? any-has-hide-hole? (not (null? names))))
            (λ (exp)
              (cond
-               [(list? exp) (match-list/boolean rewritten (freshen exp))]
+               [(list? exp) (match-list/boolean rewritten exp)]
                [else #f]))]
           [(= 0 repeats)
            (λ (exp hole-info nesting-depth)
@@ -967,7 +1002,7 @@ See match-a-pattern.rkt for more details
                [(list? exp)
                 ;; shortcircuit: if the list isn't the right length, give up immediately.
                 (if (= (length exp) non-repeats)
-                    (match-list/no-repeats rewritten/coerced (freshen exp) hole-info nesting-depth)
+                    (match-list/no-repeats rewritten/coerced exp hole-info nesting-depth)
                     #f)]
                [else #f]))]
           [else
@@ -977,7 +1012,7 @@ See match-a-pattern.rkt for more details
                 ;; shortcircuit: if the list doesn't have the right number of
                 ;; fixed parts, give up immediately
                 (if (>= (length exp) non-repeats)
-                    (match-list rewritten/coerced (freshen exp) hole-info nesting-depth)
+                    (match-list rewritten/coerced exp hole-info nesting-depth)
                     #f)]
                [else #f]))])
         any-has-hole?
