@@ -85,6 +85,18 @@
                  `pat
                  (all-distinct? distinct-name ...)))
 
+  (define-syntax-rule (destr-test-lang lang orig pat (distinct-name ...))
+    (begin 
+      (define-metafunction lang
+        fatwd : any -> any
+        [(fatwd (any (... ...)))
+         ((fatwd any) (... ...))]
+        [(fatwd any) any])
+      
+      (check-match (term (fatwd orig))
+                   `pat
+                   (all-distinct? distinct-name ...))))
+
   ;; TODO: the `no-cl` shouldn't be freshened. Doing proper pattern compilation
   ;; should get rid of that problem
   
@@ -135,7 +147,7 @@
 #|
 ;; == tests of the internals of binding-forms ==
 
-(module+ test
+ (module+ test
  (require rackunit) 
  (require redex/reduction-semantics)
  
@@ -277,15 +289,16 @@
           [(list sub-v ...) (map (lambda (sv) (totally-destructure d sv)) sub-v)]
           [atom atom]))
  
- (define (all-distinct? . lst)
-    (equal? lst (remove-duplicates lst)))
+ (define (all-distinct-vars? . lst)
+   (and (equal? lst (remove-duplicates lst))
+        (andmap symbol? lst)))
 
  (check-match
   (totally-destructure 
    big-freshener
    `(let* (cl a 4 (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c)))ll)
   `(let* (cl ,aa 4 (cl ,bb (,aa 5) (cl ,cc (,bb (,aa 6)) no-cl))) (,aa (,bb ,cc)))
-  (all-distinct? 'a aa 'b bb 'c cc))
+  (all-distinct-vars? 'a aa 'b bb 'c cc))
 
  ;; check that shadowing works properly
  (check-match
@@ -303,7 +316,7 @@
               (cl x ((lambda (a) a) a) no-cl)) a))
   ` (let* (cl ,a1 ((lambda (,a2) ,a2) a) 
               (cl ,x ((lambda (,a3) ,a3) ,a1) no-cl)) ,a1)
-  (all-distinct? a1 a2 a3 'a))
+  (all-distinct-vars? a1 a2 a3 'a))
  
  ;; test that nested structure doesn't get lost
 
@@ -312,21 +325,21 @@
    big-freshener
    `(embedded-lambda (a) (((b) (a b)) (a b))))
   ` (embedded-lambda (,aa) (((,bb) (,aa ,bb)) (,aa b)))
-  (all-distinct? aa bb 'a 'b))
+  (all-distinct-vars? aa bb 'a 'b))
 
  (check-match
   (totally-destructure
    big-freshener
    `(embedded-lambda (a) (((a) a) a)))
   ` (embedded-lambda (,aa) (((,bb) ,bb) ,aa))
-  (all-distinct? aa bb 'a))
+  (all-distinct-vars? aa bb 'a))
 
  (check-match
   (totally-destructure
    big-freshener
    `(embedded-lambda (a) ((((cl a x no-cl)) a) a)))
   ` (embedded-lambda (,aa) ((((cl ,bb x no-cl)) ,bb) ,aa))
-  (all-distinct? aa bb 'a))
+  (all-distinct-vars? aa bb 'a))
 
  (check-match
   (totally-destructure
@@ -356,12 +369,11 @@
 
 ;; == tests of binding forms inside actual Redex ==
 
-(module+ test
+ (module+ test
   (require redex/reduction-semantics)
-  (require rackunit)
   
   (define-language lc
-    (e (e e)
+    (e (e ...)
        x
        (lambda (x) e))
     (x variable-not-otherwise-mentioned)
@@ -374,20 +386,137 @@
                (term (lambda (x) e)))
    `(lambda (,x) (y (lambda (y) (y (y ,x)))))
    (not (eq? x `x)))
+
+  (define-syntax-rule (define-subst subst-name lang)
+    (define-metafunction lang
+      subst-name : any x e -> any
+      [(subst-name x x e_new) e_new]
+      [(subst-name x x_old e_new) x]
+      [(subst-name (any (... ...)) x_old e_new)
+       ((subst-name any x_old e_new) (... ...))]
+      [(subst-name any x_old e_new) any]))
   
-  (define-metafunction lc
-    subst : any x e -> any
-    [(subst x x e_new) e_new]
-    [(subst x x_old e_new) x]
-    [(subst (any ...) x_old e_new)
-     ((subst any x_old e_new) ...)]
-    [(subst any x_old e_new) any])
+  (define-subst subst-lc lc)
   
   
   (check-match
-   (term (subst (lambda (x) (y (lambda (y) (y y)))) y (lambda (z) (z x))))
+   (term (subst-lc (lambda (x) (y (lambda (y) (y y)))) y (lambda (z) (z x))))
    `(lambda (,x) ((lambda (z) (z x)) (lambda (,y) (,y ,y))))
-   (all-distinct? x y `x `y))
+   (all-distinct-vars? x y `x `y))
 
   )
 |#
+
+;; == interactions with `extend-language` and `union-language` ==
+
+(module+ test
+  (define-language va-lc
+    (x variable-not-otherwise-mentioned)
+    (expr x
+          (expr ...)
+          (lambda (x ...) expr))
+    #:binding-forms
+    (lambda (x ...) expr #:refers-to (rib x ...)))
+
+  (define-extended-language lc-with-extra-lambda va-lc
+    (expr ....
+          (extra-lambda (x) expr))
+    #:binding-forms
+    (extra-lambda (x) expr #:refers-to x))
+
+
+
+  (define (all-distinct-vars? . lst)
+    (and (equal? lst (remove-duplicates lst))
+         (andmap symbol? lst)))
+
+  (define-syntax-rule (define-subst subst-name lang)
+    (define-metafunction lang
+      subst-name : any x any -> any
+      [(subst-name x x any_new) any_new]
+      [(subst-name x x_old any_new) x]
+      [(subst-name (any (... ...)) x_old any_new)
+       ((subst-name any x_old any_new) (... ...))]
+      [(subst-name any x_old any_new) any]))
+
+  (define-subst subst-lwel lc-with-extra-lambda)
+
+  (check-match
+   (term (subst-lwel (lambda (x) (extra-lambda (y) (x y z
+                                                      (lambda (z) z)
+                                                      (extra-lambda (z) z))))
+                     z (w x y z)))
+   `(lambda (,x) (extra-lambda (,y) (,x ,y (w x y z)
+                                        (lambda (,z0) ,z0)
+                                        (extra-lambda (,z1) ,z1))))
+   (all-distinct-vars? x y z0 z1 `w `x `y `z))
+
+  (define-language definition-lang
+    (x variable-not-otherwise-mentioned)
+    (block (blk stmt block)
+           ())
+    (stmt expr
+          (def x expr))
+    (expr (+ expr expr)
+          number
+          (x)) ;; this is to define plain variable references from being interpreted as binders
+    #:binding-forms
+    (def x expr) #:exports x
+    (blk stmt block #:refers-to stmt))
+
+  (destr-test-lang 
+   definition-lang
+   (blk (def a 1) (blk (+ (a) (a)) ()))
+   (blk (def ,aa 1) (blk (+ (,aa) (,aa)) ()))
+   (aa 'a))
+
+
+  (define-union-language union-def-lc definition-lang lc)
+
+  (destr-test-lang 
+   union-def-lc
+   (blk (def a 1) (blk (+ (a) (a)) ()))
+   (blk (def ,aa 1) (blk (+ (,aa) (,aa)) ()))
+   (aa 'a))
+
+  (define-subst subst-udl union-def-lc)
+
+  (check-match
+   (term (subst-udl
+          (blk (x) 
+               (blk (z) 
+                    (blk (def x (+ (lambda (z) z) (lambda (x) z)))
+                         (blk (def z x)
+                              (blk (z) ())))))
+          z (w x y)))
+   `(blk (x)
+         (blk ((w x y)) 
+              (blk (def ,x0 (+ (lambda (,z0) ,z0) (lambda (,x1) (w x y))))
+                   (blk (def ,z1 ,x)
+                        (blk (,z1) ())))))
+   (all-distinct-vars? `w `x `y `z x0 x1 z0 z1))
+
+  (define-union-language four-lcs (a. lc) (b. lc) lc (c. lc))
+
+  (destr-test-lang 
+   four-lcs
+   (lambda (a) a)
+   (lambda (,aa) ,aa)
+   (aa 'a))
+
+  (define-union-language pfx-def-and-lc (def. definition-lang) (lc. lc))
+
+  (destr-test-lang 
+   pfx-def-and-lc
+   (lambda (a) a)
+   (lambda (,aa) ,aa)
+   (aa 'a))
+
+  (destr-test-lang 
+   pfx-def-and-lc
+   (blk (def a 1) (blk (+ (a) (a)) ()))
+   (blk (def ,aa 1) (blk (+ (,aa) (,aa)) ()))
+   (aa 'a))
+
+  
+ )

@@ -12,12 +12,11 @@
  (require "rewrite-side-conditions.rkt")
 
 
- ;; Intended for use in "reduction-semantics.rkt", at phase 1, but after the appropriate
- ;; `language-id` has been set up (e.g., in `language`, rather than `define-language`)
-
- ;; Takes the syntax that comes after a `#:binding-forms` and returns syntax
- ;; for a table mapping patterns to bspecs
- (define (compile-binding-forms binding-forms-stx lang-id form-name)
+ ;; Intended for use in "reduction-semantics.rkt".
+ ;; 
+ ;; Takes the syntax that comes after a `#:binding-forms` and returns 
+ ;; syntax<(listof (list pattern bspec))>
+ (define (compile-binding-forms binding-forms-stx all-nts form-name)
    (syntax-case binding-forms-stx ()
      [((bf-name . bf-body) . rest-plus-exports)
       (begin
@@ -37,14 +36,13 @@
           (surface-bspec->pat&bspec #`((bf-name . bf-body) #:exports #,exports)))
 
         (with-syntax ([(syncheck-expr rewritten-pat _ _)
-                       (rewrite-side-conditions/check-errs lang-id form-name #t pat)])
+                       (rewrite-side-conditions/check-errs all-nts form-name #t pat)])
           #`(cons (begin syncheck-expr `(rewritten-pat , `#,bspec))
-                  #,(compile-binding-forms rest-of-bfs lang-id form-name)))
+                  #,(compile-binding-forms rest-of-bfs all-nts form-name)))
 
         )]
      [() #`'()]
      [anything (raise-syntax-error 'compile-binding-forms "expected a parenthesized binding form." #`anything)]))
-
 
 
 

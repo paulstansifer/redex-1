@@ -20,7 +20,8 @@
 (define (freshen language-bf-table match-pattern redex-val)
   (parameterize ([bf-table language-bf-table]
                  [pattern-matcher match-pattern]) 
-    (first (rec-freshen redex-val #f #t))))
+                (first (rec-freshen redex-val #f #t))))
+
 
 ;; == pattern-dispatch ==
 ;; dispatch : redex-val (bindings bspec -> X) (redex-val -> X) -> X 
@@ -252,6 +253,7 @@
   (filter-map
    (λ (b)
      (define nt-name (bind-name b))
+
      (define ...-depth (second (assoc nt-name (bspec-transcription-depths bs))))
      (define sub-noop? (or noop?
                            (not (xor (member nt-name (bspec-exported-nts bs))

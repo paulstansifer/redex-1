@@ -52,7 +52,8 @@ See match-a-pattern.rkt for more details
          "lang-struct.rkt"
          "enum.rkt"
          "binding-forms.rkt"
-         "ambiguous.rkt")
+         "ambiguous.rkt"
+         (only-in "binding-forms-definitions.rkt" bspec?))
 
 (define-struct compiled-pattern (cp binds-names? skip-dup-check?) #:transparent)
 
@@ -2023,7 +2024,7 @@ See match-a-pattern.rkt for more details
  (cache-size (and/c integer? positive?))
  
  (compile-language (-> any/c (listof nt?) (hash/c symbol? uf-set?) 
-                       (listof (list/c any/c #|not-yet-compiled pattern|# any/c #|bspec|#))
+                       any/c #;(listof (list/c compiled-pattern? bspec?))
                        compiled-lang?)))
 (provide compiled-pattern? 
          print-stats)

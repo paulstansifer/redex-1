@@ -102,7 +102,7 @@
 ;;                       (listof symbol)
 ;;                       (listof (listof symbol)) -- keeps track of `primary' non-terminals
 ;;                       hash[sym -o> pattern]
-;;                       binding-table
+;;                       (listof (list compiled-pattern bspec))
 ;;                       (hash/c symbol? enum?)) ;; see enum.rkt
 
 (define-struct compiled-lang (lang delayed-cclang ht list-ht raw-across-ht raw-across-list-ht
