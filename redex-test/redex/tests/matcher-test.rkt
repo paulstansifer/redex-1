@@ -851,14 +851,14 @@
        (with-syntax ([line (syntax-line stx)])
                     #'(test-empty/proc line . args))]))
 
-  (define noop-freshener (lambda (x) x)) 
+  (define no-binding-forms `()) 
   
   (define (test-empty/proc line pat exp ans)
     (run-match-test
      line
-     `(match-pattern (compile-pattern (compile-language 'pict-stuff-not-used '() (hash) noop-freshener) ',pat #t) ',exp)
+     `(match-pattern (compile-pattern (compile-language 'pict-stuff-not-used '() (hash) no-binding-forms) ',pat #t) ',exp)
      (match-pattern 
-      (compile-pattern (compile-language 'pict-stuff-not-used '() (hash) noop-freshener) pat #t)
+      (compile-pattern (compile-language 'pict-stuff-not-used '() (hash) no-binding-forms) pat #t)
       exp)
      ans))
   
@@ -869,9 +869,9 @@
                                    nts))])
       (run-match-test
        line
-       `(match-pattern (compile-pattern (compile-language 'pict-stuff-not-used ',nts ,nt-map noop-freshener) ',pat #t) ',exp)
+       `(match-pattern (compile-pattern (compile-language 'pict-stuff-not-used ',nts ,nt-map no-binding-forms) ',pat #t) ',exp)
        (match-pattern 
-        (compile-pattern (compile-language 'pict-stuff-not-used nts nt-map noop-freshener) pat #t)
+        (compile-pattern (compile-language 'pict-stuff-not-used nts nt-map no-binding-forms) pat #t)
         exp)
        ans)))
   
@@ -932,7 +932,7 @@
             (compile-language 'pict-stuff-not-used
                               nts
                               (mk-uf-sets (map (λ (x) (list (nt-name x))) nts))
-                              noop-freshener))))
+                              no-binding-forms))))
     (run-match-test
      line
      `(match-pattern (compile-pattern xab-lang ',pat #t) ',exp)
@@ -952,7 +952,7 @@
                    (make-nt 'bb
                             (list (make-rhs 'b))))
              (mk-uf-sets '((aa) (bb)))
-             noop-freshener)))
+             no-binding-forms)))
     (run-match-test
      line
      `(match-pattern (compile-pattern ab-lang ',pat #t) ',exp)
@@ -996,7 +996,7 @@
      (let ([mtch ((compiled-pattern-cp
                    (let ([nts (map (λ (nt-def) (nt (car nt-def) (map rhs (cdr nt-def)))) nts/sexp)])
                      (compile-pattern (compile-language 'pict-stuff-not-used nts 
-                                                        (mk-uf-sets (map (λ (x) (list (nt-name x))) nts )) noop-freshener)
+                                                        (mk-uf-sets (map (λ (x) (list (nt-name x))) nts )) no-binding-forms)
                                       pat #t)))
                   exp
                   #t

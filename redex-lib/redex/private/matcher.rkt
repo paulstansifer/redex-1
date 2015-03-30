@@ -50,7 +50,8 @@ See match-a-pattern.rkt for more details
          "underscore-allowed.rkt"
          "match-a-pattern.rkt"
          "lang-struct.rkt"
-         "enum.rkt")
+         "enum.rkt"
+         "binding-forms.rkt")
 
 (define-struct compiled-pattern (cp binds-names? skip-dup-check?) #:transparent)
 
@@ -61,42 +62,10 @@ See match-a-pattern.rkt for more details
 ;; in them. It means to match the
 ;; embedded sexp and return that binding
 
-;; bindings = (make-bindings (listof rib))
-;; rib = (make-bind sym sexp)
-;; if a rib has a pair, the first element of the pair should be treated as a prefix on the identifier
-;; NOTE: the bindings may contain mismatch-ribs temporarily, but they are all removed
-;;       by merge-multiples/remove, a helper function called from match-pattern
-(define-values (make-bindings bindings-table bindings? empty-bindings)
-  (let () 
-    (define-struct bindings (table) #:transparent) ;; for testing, add inspector
-    (define empty-bindings (make-bindings '()))
-    (values (lambda (table) (if (null? table) empty-bindings (make-bindings table)))
-            bindings-table
-            bindings?
-            empty-bindings)))
 
-(define-struct bind (name exp) #:transparent)
-(define-struct mismatch-bind (name exp nesting-depth) #:transparent)
 
 ;; repeat = (make-repeat compiled-pattern (listof rib) (or/c #f symbol?) (or/c #f symbol?))
 (define-struct repeat (pat empty-bindings name mismatch) #:transparent)
-
-;; compiled-pattern : exp hole-info nesting-depth -> (union #f (listof mtch))
-;; mtch = (make-mtch bindings sexp[context] (union none sexp[hole]))
-;; hole-info = boolean
-;;               #f means we're not in a `in-hole' context
-;;               #t means we're looking for a hole
-(define-values (mtch-bindings mtch-context mtch-hole make-mtch mtch?)
-  (let ()
-    (define-struct mtch (bindings context hole) #:inspector (make-inspector))
-    (values mtch-bindings
-            mtch-context
-            mtch-hole
-            (lambda (a b c)
-              (unless (bindings? a)
-                (error 'make-mtch "expected bindings for first agument, got ~e" a))
-              (make-mtch a b c))
-            mtch?)))
 
 (define none
   (let ()
@@ -111,17 +80,20 @@ See match-a-pattern.rkt for more details
 ;;                                     hash[sym -o> boolean])
 ;;                                     hash[sexp[pattern] -o> (cons compiled-pattern boolean)]
 ;;                                     hash[sexp[pattern] -o> (cons compiled-pattern boolean)]
+;;                                     hash[sexp[pattern] -o> (cons compiled-pattern boolean)]
 ;;                                     pict-builder
 ;;                                     (listof symbol)
 ;;                                     (listof (listof symbol)) -- keeps track of `primary' non-terminals
 ;;                                     hash[sym -o> pattern]
-;;                                     binding-forms
+;;                                     binding-table
 ;;                                     (hash/c symbol? enum?)) ;; see enum.rkt
 
 (define-struct compiled-lang (lang delayed-cclang ht list-ht raw-across-ht raw-across-list-ht
-                                   has-hole-or-hide-hole-ht cache bind-names-cache pict-builder
+                                   has-hole-or-hide-hole-ht cache binding-forms-absent-cache
+                                   bind-names-cache pict-builder
                                    literals nt-map collapsible-nts
-                                   freshen enum-table))
+                                   binding-table enum-table))
+
 (define (compiled-lang-cclang x) (force (compiled-lang-delayed-cclang x)))
 (define (compiled-lang-across-ht x)
   (compiled-lang-cclang x) ;; ensure this is computed
@@ -145,27 +117,33 @@ See match-a-pattern.rkt for more details
                (bind-exp rib)
                (loop (cdr ribs))))]))))
 
-;; compile-language : language-pict-info[see pict.rkt] (listof nt) (listof (uf-set/c symbol?)) freshener -> compiled-lang
-(define (compile-language pict-info lang nt-map freshener)
+;; compile-language : language-pict-info[see pict.rkt] (listof nt) (listof (uf-set/c symbol?)) 
+;; (listof (list rewritten-pattern bspec)) -> compiled-lang
+(define (compile-language pict-info lang nt-map binding-info)
   (let* ([clang-ht (make-hasheq)]
          [clang-list-ht (make-hasheq)]
          [across-ht (make-hasheq)]
          [across-list-ht (make-hasheq)]
          [has-hole-or-hide-hole-ht (build-has-hole-or-hide-hole-ht lang)]
          [cache (make-hash)]
+         [binding-forms-absent-cache (make-hash)]
          [bind-names-cache (make-hash)]
          [literals (extract-literals lang)]
          [collapsible-nts (extract-collapsible-nts lang)]
          [clang (make-compiled-lang lang #f clang-ht clang-list-ht 
                                     across-ht across-list-ht
                                     has-hole-or-hide-hole-ht 
-                                    cache bind-names-cache
+                                    cache binding-forms-absent-cache bind-names-cache
                                     pict-info
                                     literals
                                     nt-map
                                     collapsible-nts
-                                    freshener
+                                    `() ;; internal patterns don't need freshening
                                     #f)]
+         [binders (map (match-lambda
+                        [`(,rewritten-pattern ,bspec) 
+                         `(,(compile-pattern clang rewritten-pattern #t) ,bspec)])
+                       binding-info)]
          [non-list-nt-table (build-non-list-nt-label lang)]
          [list-nt-table (build-list-nt-label lang)]
          [do-compilation
@@ -187,6 +165,7 @@ See match-a-pattern.rkt for more details
                   (error 'compile-language 
                          "internal error: unable to determine whether pattern matches lists, non-lists, or both: ~s"
                          (rhs-pattern rhs))))))]
+         
          [init-ht
           (lambda (ht)
             (for-each (lambda (nt) (hash-set! ht (nt-name nt) null))
@@ -214,8 +193,10 @@ See match-a-pattern.rkt for more details
     (do-compilation clang-ht clang-list-ht lang)
     (define enumerators
       (lang-enumerators lang compatible-context-language))
+
     (struct-copy compiled-lang clang [delayed-cclang compatible-context-language]
-                                     [enum-table enumerators])))
+                                     [enum-table enumerators]
+                                     [binding-table binders])))
 
 ;; mk-uf-sets : (listof (listof sym)) -> (hash[symbol -o> uf-set?])
 ;; in the result hash, each nt maps to a uf-set that represents
@@ -710,7 +691,8 @@ See match-a-pattern.rkt for more details
 
 ;; compile-pattern : compiled-lang pattern boolean -> compiled-pattern
 (define (compile-pattern clang pattern bind-names?)
-  (let-values ([(pattern has-hole? has-hide-hole? names) (compile-pattern/cross? clang pattern bind-names?)])
+  (let-values ([(pattern has-hole? has-hide-hole? names) 
+                (compile-pattern/cross? clang pattern bind-names?)])
     (build-compiled-pattern (if (or has-hole? has-hide-hole? (not (null? names)))
                                 pattern
                                 (convert-matcher pattern))
@@ -758,11 +740,20 @@ See match-a-pattern.rkt for more details
   (define clang-ht (compiled-lang-ht clang))
   (define clang-list-ht (compiled-lang-list-ht clang))
   (define has-hole-or-hide-hole-ht (compiled-lang-has-hole-or-hide-hole-ht clang))
-  
+  (define binding-forms (compiled-lang-binding-table clang))
+
+  ;; Note that `bind-names?` means that identical names must match identical values, and 
+  ;; binding forms specify alpha-equivalence behavior in the user-defined language.
+  ;; Other than the fact that `bind-names?` being false supresses freshening (and thus allows
+  ;; us to ignore the binding forms), they have nothing to do with each other!
+
+
   (define (compile-pattern/default-cache pattern)
     (compile-pattern/cache pattern 
                            (if bind-names?
-                               (compiled-lang-bind-names-cache clang)
+                               (if (empty? binding-forms) 
+                                   (compiled-lang-binding-forms-absent-cache clang)
+                                   (compiled-lang-bind-names-cache clang))
                                (compiled-lang-cache clang))))
   
   (define in-name-parameter (make-parameter #f))
@@ -771,20 +762,23 @@ See match-a-pattern.rkt for more details
     (let ([compiled-cache (hash-ref compiled-pattern-cache pattern uniq)])
       (cond 
         [(eq? compiled-cache uniq)
-         (define-values (compiled-pattern-without-freshening has-hole? has-hide-hole? names) (true-compile-pattern pattern))
+         (define-values (compiled-pattern-without-freshening has-hole? has-hide-hole? names) 
+           (true-compile-pattern pattern))
 
          ;; If necessary, freshen the value before matching it
          (define compiled-pattern
            (cond
-            [(not (pattern-might-destructure? pattern))
+            [(or (not bind-names?) 
+                 (not (pattern-might-destructure? pattern))
+                 (empty? (compiled-lang-binding-table clang)))
              compiled-pattern-without-freshening]
             [(equal? (procedure-arity compiled-pattern-without-freshening) 3)
              (lambda (exp hole-info nesting-depth)
                      (compiled-pattern-without-freshening
-                      ((compiled-lang-freshen clang) exp) hole-info nesting-depth))]
-            [else
-             (lambda (exp) (compiled-pattern-without-freshening
-                            ((compiled-lang-freshen clang) exp)))]))
+                      (freshen (compiled-lang-binding-table clang) match-pattern exp)
+                      hole-info nesting-depth))]
+            ;; only returns a boolean, no need to freshen
+            [else compiled-pattern-without-freshening]))
          
          
          (unless (equal? (if (or has-hole? has-hide-hole? (not (null? names)))
@@ -2053,21 +2047,9 @@ See match-a-pattern.rkt for more details
  (set-cache-size! (-> (and/c integer? positive?) void?))
  (cache-size (and/c integer? positive?))
  
- (mtch? predicate/c)
- (make-mtch (bindings? any/c any/c . -> . mtch?))
- (mtch-bindings (mtch? . -> . bindings?))
- (mtch-context (mtch? . -> . any/c))
- (mtch-hole (mtch? . -> . (or/c none? any/c)))
- 
- (make-bindings ((listof bind?) . -> . bindings?))
- (bindings-table (bindings? . -> . (listof bind?)))
- (bindings? predicate/c)
- 
- (make-bind (symbol? any/c . -> . bind?))
- (bind? predicate/c)
- (bind-name (bind? . -> . symbol?))
- (bind-exp (bind? . -> . any/c))
- (compile-language (-> any/c (listof nt?) (hash/c symbol? uf-set?) (-> any/c any/c) #|PS: be more specific|# compiled-lang?)))
+ (compile-language (-> any/c (listof nt?) (hash/c symbol? uf-set?) 
+                       (listof (list/c any/c #|not-yet-compiled pattern|# any/c #|bspec|#))
+                       compiled-lang?)))
 (provide compiled-pattern? 
          print-stats)
 

@@ -10,7 +10,9 @@
          "term-fn.rkt"
          "search.rkt"
          "lang-struct.rkt"
-         (only-in "binding-forms.rkt" binding-info->freshener)
+         "binding-forms-compiler.rkt"
+         (only-in "binding-forms-definitions.rkt"
+                  shadow rib nothing)
          (for-syntax "cycle-check.rkt"
                      setup/path-to-relative)
          racket/trace
@@ -25,6 +27,7 @@
                      "rewrite-side-conditions.rkt"
                      "term-fn.rkt"
                      "underscore-allowed.rkt"
+                     (only-in "binding-forms-compiler.rkt" compile-binding-forms)
                      syntax/boundmap
                      syntax/id-table
                      racket/base
@@ -1959,7 +1962,7 @@
                                         rhs)) 
                                      (syntax->list rhss)))
                               (syntax->list (syntax ((rhs ...) ...))))]
-                        [((rhs/lw ...) ...) 
+                        [((rhs/lw ...) ...)
                          (map (lambda (rhss) (map to-lw/proc (syntax->list rhss)))
                               (syntax->list (syntax ((rhs ...) ...))))]
                         [(refs ...)
@@ -1995,9 +1998,10 @@
                                          (map (λ (x) (list x (car l)))
                                               (cdr l)))))
                                  (syntax->list #'(name ...))))]
-                          [freshener (binding-info->freshener
-                                      #'(binding-forms ...) #'lang-id
-                                      #'redex-let* #'term-match/single)])
+                          [binding-table 
+                           (compile-binding-forms #'(binding-forms ...) #'lang-id
+                                                  #'form-name)])
+
               
               ;; note: when there are multiple names for a single non-terminal,
               ;; we build equivalent non-terminals by redirecting all except the
@@ -2013,7 +2017,7 @@
                                     (list (make-nt 'first-names (list (make-rhs `r-rhs) ...)) ...
                                           (make-nt 'new-name (list (make-rhs '(nt orig-name)))) ...)
                                     (mk-uf-sets '((uniform-names ...) ...))
-                                    freshener))))))))]))
+                                    binding-table))))))))]))
 
 
 (define-syntax (define-extended-language stx)
@@ -2173,7 +2177,7 @@
                               new-pict-infos)
                       (hash-map new-ht (λ (x y) y))
                       (compiled-lang-nt-map old-lang)
-                      (lambda (x) x) #|PS: combine the two sets of binding forms|#)))
+                      `() #|PS: combine the two sets of binding forms|#)))
 
 (define-syntax (define-union-language stx)
   (syntax-case stx ()
@@ -2286,7 +2290,7 @@
   
   (compile-language #f
                     (hash-map names-table (λ (name set) (make-nt name (set->list set))))
-                    new-nt-map (lambda (x) x) #|PS: actually unify the binding forms|#))
+                    new-nt-map `() #|PS: actually unify the binding forms|#))
 
 
 ;; find-primary-nt : symbol lang -> symbol or #f
@@ -2624,6 +2628,8 @@
          (struct-out metafunc-case)
          
          (struct-out binds))
+
+(provide shadow rib nothing)
 
 (provide test-match
          test-match?
