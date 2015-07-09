@@ -8,7 +8,7 @@
 (define-syntax (nothing stx) (raise-syntax-error 'nothing "used outside of binding specification"))
 
 (struct import/internal (body beta) #:transparent)
-(struct .../internal (body drivers) #:transparent)
+(struct .../internal (body drivers) #:transparent) 
 
 (struct shadow/internal (betas) #:transparent)
 (struct rib/internal (betas) #:transparent)

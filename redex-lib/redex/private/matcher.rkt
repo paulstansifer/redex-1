@@ -51,7 +51,8 @@ See match-a-pattern.rkt for more details
          "match-a-pattern.rkt"
          "lang-struct.rkt"
          "enum.rkt"
-         "binding-forms.rkt")
+         "binding-forms.rkt"
+         "ambiguous.rkt")
 
 (define-struct compiled-pattern (cp binds-names? skip-dup-check?) #:transparent)
 
@@ -72,35 +73,6 @@ See match-a-pattern.rkt for more details
     (define-struct none ())
     (make-none)))
 (define (none? x) (eq? x none))
-
-;; compiled-lang : (make-compiled-lang (listof nt) 
-;;                                     hash[sym -o> compiled-pattern]
-;;                                     hash[sym -o> compiled-pattern]
-;;                                     hash[sym -o> compiled-pattern]
-;;                                     hash[sym -o> boolean])
-;;                                     hash[sexp[pattern] -o> (cons compiled-pattern boolean)]
-;;                                     hash[sexp[pattern] -o> (cons compiled-pattern boolean)]
-;;                                     hash[sexp[pattern] -o> (cons compiled-pattern boolean)]
-;;                                     pict-builder
-;;                                     (listof symbol)
-;;                                     (listof (listof symbol)) -- keeps track of `primary' non-terminals
-;;                                     hash[sym -o> pattern]
-;;                                     binding-table
-;;                                     (hash/c symbol? enum?)) ;; see enum.rkt
-
-(define-struct compiled-lang (lang delayed-cclang ht list-ht raw-across-ht raw-across-list-ht
-                                   has-hole-or-hide-hole-ht cache binding-forms-absent-cache
-                                   bind-names-cache pict-builder
-                                   literals nt-map collapsible-nts
-                                   binding-table enum-table))
-
-(define (compiled-lang-cclang x) (force (compiled-lang-delayed-cclang x)))
-(define (compiled-lang-across-ht x)
-  (compiled-lang-cclang x) ;; ensure this is computed
-  (compiled-lang-raw-across-ht x))
-(define (compiled-lang-across-list-ht x) 
-  (compiled-lang-cclang x) ;; ensure this is computed
-  (compiled-lang-raw-across-list-ht x))
 
 ;; lookup-binding : bindings (union sym (cons sym sym)) [(-> any)] -> any
 (begin-encourage-inline
@@ -138,6 +110,7 @@ See match-a-pattern.rkt for more details
                                     literals
                                     nt-map
                                     collapsible-nts
+                                    'uninitialized-ambiguity-info
                                     `() ;; internal patterns don't need freshening
                                     #f)]
          [binders (map (match-lambda
@@ -191,11 +164,13 @@ See match-a-pattern.rkt for more details
           (do-compilation across-ht across-list-ht compatible-context-language)
           compatible-context-language)))
     (do-compilation clang-ht clang-list-ht lang)
+    (define the-ambiguity-cache (build-ambiguity-cache clang))
     (define enumerators
       (lang-enumerators lang compatible-context-language))
 
     (struct-copy compiled-lang clang [delayed-cclang compatible-context-language]
                                      [enum-table enumerators]
+                                     [ambiguity-cache the-ambiguity-cache]
                                      [binding-table binders])))
 
 ;; mk-uf-sets : (listof (listof sym)) -> (hash[symbol -o> uf-set?])
@@ -2062,10 +2037,7 @@ See match-a-pattern.rkt for more details
          (struct-out mismatch-bind)
          (struct-out compiled-pattern))
 
-(provide (struct-out compiled-lang)
-         compiled-lang-cclang
-         
-         lookup-binding
+(provide lookup-binding
          
          compiled-pattern
          

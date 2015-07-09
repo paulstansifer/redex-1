@@ -22,6 +22,8 @@
    (match beta
      [(rib/internal betas) #`(rib/internal (list #,@(map beta->constructor betas)))]
      [(shadow/internal betas) #`(shadow/internal (list #,@(map beta->constructor betas)))]
+     [(.../internal beta names) #`(.../internal #,(beta->constructor beta)
+                                                `#,names)]
      [name #` ` #,name]))
 
  (define (body->constructor body)

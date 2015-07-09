@@ -940,8 +940,8 @@
        
 (define empty-lang
   (compiled-lang
-   #f #f #f #f #f #f #f #f #f #f #f '() #f (hash) '() #|PS: update|#
-   (lang-enumerators '() (delay '()))))
+   #f #f #f #f #f #f #f #f #f #f #f '() #f (hash)
+   (make-hash) '() #|PS: update|# (lang-enumerators '() (delay '()))))
 
 (define unique-name-nums (make-parameter 0))
 
