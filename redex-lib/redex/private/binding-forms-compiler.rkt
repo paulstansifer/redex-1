@@ -12,39 +12,6 @@
  (require "rewrite-side-conditions.rkt")
 
 
- (define (bspec->constructor bs)
-   (match bs
-     [(bspec body export-beta i-nts e-nts p-nts t-depths)
-      #`(bspec #,(body->constructor body) #,(beta->constructor export-beta)
-               `#,i-nts `#,e-nts `#,p-nts `#,t-depths)]))
-
- (define (beta->constructor beta)
-   (match beta
-     [(rib/internal betas) #`(rib/internal (list #,@(map beta->constructor betas)))]
-     [(shadow/internal betas) #`(shadow/internal (list #,@(map beta->constructor betas)))]
-     [(.../internal beta names) #`(.../internal #,(beta->constructor beta)
-                                                `#,names)]
-     [name #` ` #,name]))
-
- (define (body->constructor body)
-   (match body
-     [(import/internal sub-body beta) #`(import/internal #,(body->constructor sub-body)
-                                                         #,(beta->constructor beta))]
-     [(.../internal sub-body names) #`(.../internal #,(body->constructor sub-body)
-                                                    `#,names)]
-     [(list sub-bodies ...) #`(list #,@(map body->constructor sub-bodies))]
-     [name #` ` #,name]))
-
-
- (module+ test
-   (define test-bspec (bspec `(lambda (x) ,(import/internal `expr (shadow/internal `(x x))))
-                             (shadow/internal `(x ,(shadow/internal `())))
-                             `(x) `(x) `(x) `((lambda 0) (x 0) (expr 0))))
-   (check-equal?
-    (eval (bspec->constructor test-bspec))
-    test-bspec))
-
-
  ;; Intended for use in "reduction-semantics.rkt", at phase 1, but after the appropriate
  ;; `language-id` has been set up (e.g., in `language`, rather than `define-language`)
 
@@ -71,7 +38,7 @@
 
         (with-syntax ([(syncheck-expr rewritten-pat _ _)
                        (rewrite-side-conditions/check-errs lang-id form-name #t pat)])
-          #`(cons (begin syncheck-expr `(rewritten-pat , #,(bspec->constructor bspec)))
+          #`(cons (begin syncheck-expr `(rewritten-pat , `#,bspec))
                   #,(compile-binding-forms rest-of-bfs lang-id form-name)))
 
         )]
