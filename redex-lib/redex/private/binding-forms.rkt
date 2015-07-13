@@ -68,8 +68,9 @@
                 `((,(mb 'x 1) ,(mb 'x 2) ,(mb 'x 3))
                   (,(mb 'y 4) ,(mb 'y 5) ,(mb 'y 6)))))
 
-;; pass-... : match (listof symbol) -> (listof match)
-(define (pass-... red-match driving-names)
+;; pass-... : match (listof symbol) (∪ #f natural-number) -> (listof match)
+;; If no driving names are applicable, `repeat-count` should be a number
+(define (pass-... red-match driving-names [repeat-count #f])
   ;; here "bind" has the *Redex* meaning of a pair of a name and the value
   ;; bound to that name by `redex-match`
   (define-values (driven-binds undriven-binds)
@@ -77,9 +78,11 @@
 
   (define pushed-down-driven (push-down-symbols driven-binds))
 
-  (apply map
-         (cons (λ driven-binds (append driven-binds undriven-binds))
-               pushed-down-driven)))
+  (if (empty? pushed-down-driven)
+      (build-list repeat-count (λ (idx) undriven-binds)) ;; driven-binds will be empty
+      (apply map
+             (cons (λ driven-binds (append driven-binds undriven-binds))
+                   pushed-down-driven))))
 
 (module+ test
   (check-equal? 
@@ -94,7 +97,6 @@
 
 ;; interp-beta : beta match (X X -> X) (symbol match -> X) X -> X 
 (define (interp-beta beta red-match combine nt-case empty-case)
-
   ;; doesn't allow `red-match` to change
   (define (interp-beta* beta)
     (match beta
@@ -164,10 +166,12 @@
        (define newly-bound-names (interp-beta-as-set beta red-match))
        (loop red-match sub-body
              (filter (match-lambda [`(,name ,_) (not (member name newly-bound-names))]) σ))]
-      [(.../internal sub-body driving-names)
-       (map 
-        (lambda (sub-red-match) (loop sub-red-match sub-body σ))
-        (pass-... red-match driving-names))]
+      [`(,(.../internal sub-body driving-names)
+         . ,body-rest)
+       `(,@(map 
+           (lambda (sub-red-match) (loop sub-red-match sub-body σ))
+           (pass-... red-match driving-names))
+         . ,(loop red-match body-rest σ))]
       [`(,body-first . ,body-rest)
        `(,(loop red-match body-first σ) . ,(loop red-match body-rest σ))]
       [`() `()]
@@ -281,10 +285,15 @@
         [(import/internal sub-body beta)
          (rename-references (loop red-match freshened-subterms sub-body)
                             (interp-beta-as-fs-subst beta freshened-subterms))]
-        [(.../internal sub-body driving-names)
-         (map (λ (sub-red-match sub-freshened-subterms)
-                 (loop sub-red-match sub-freshened-subterms sub-body))
-              (pass-... red-match driving-names) (pass-... freshened-subterms driving-names))]
+        [`(,(.../internal sub-body driving-names) . ,body-rest)
+         (define red-match-under-... (pass-... red-match driving-names))
+
+         `(,@(map (λ (sub-red-match sub-freshened-subterms)
+                    (loop sub-red-match sub-freshened-subterms sub-body))
+                 red-match-under-... 
+                 (pass-... freshened-subterms driving-names (length red-match-under-...)))
+
+           . ,(loop red-match freshened-subterms body-rest))]
         [`(,body-first . ,body-rest)
          `(,(loop red-match freshened-subterms body-first)
            . ,(loop red-match freshened-subterms body-rest))]

@@ -45,20 +45,23 @@
   (define-language big-language
    (expr (expr expr)
          (lambda (x) expr)
-         (lambda (x ...) expr)
+         (va-lambda (x ...) expr)
+         (va-vb-lambda (x ...) expr ...)
          (ieie x x x expr expr)
          (let* clauses expr)
          (let3* ((x_a expr_a) (x_b expr_b) (x_c expr_c)) expr_body)
          (siamese-lambda ((x ...) expr) ...)
          (pile-o-binders x ...)
          x
-         number)
+         number
+         (+ expr ...))
    (clauses (cl x expr clauses)
             no-cl)
    (x variable-not-otherwise-mentioned)
    #:binding-forms
    (lambda (x) expr #:refers-to x)
    (va-lambda (x ...) expr #:refers-to (rib x ...))
+   (va-vb-lambda (x ...) expr #:refers-to (rib x ...) ...)
    (ieie x_i x_e x_ie expr_1 #:refers-to (shadow x_ie x_i)
          expr_2 #:refers-to (shadow x_i x_ie)) #:exports (shadow x_e x_ie)
    (let* clauses expr #:refers-to clauses)
@@ -106,6 +109,23 @@
    (let* (cl ,a1 ((lambda (,a2) ,a2) a) 
              (cl ,x ((lambda (,a3) ,a3) ,a1) ,no-cl)) ,a1)
    (a1 a2 'a))  ;; (once metafunction caching is fixed, add a3 to this list)
+
+  (destr-test
+   (va-lambda (a b c) (+ c b a))
+   (va-lambda (,a1 ,b1 ,c1) (+ ,c1 ,b1 ,a1))
+   (a1 b1 c1 'a 'b 'c))
+
+  (destr-test
+   (va-lambda (a b c) (va-lambda (a b c) (+ a b c)))
+   (va-lambda (,a2 ,b2 ,c2) (va-lambda (,a1 ,b1 ,c1) (+ ,a1 ,b1 ,c1)))
+   (a1 b1 c1 a2 b2 c2 'a 'b 'c))
+
+  (destr-test
+   (va-vb-lambda (a b c) (+ c b a) a b c)
+   (va-vb-lambda (,a1 ,b1 ,c1) (+ ,c1 ,b1 ,a1) ,a1 ,b1 ,c1)
+   (a1 b1 c1 'a 'b 'c))
+
+  
     
 )
   
