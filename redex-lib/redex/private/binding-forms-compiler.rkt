@@ -188,7 +188,7 @@
                               (import/internal bspec-sub
                                                (surface-beta->beta #'imports-beta))
                               (map first (names-transcribed-in-body bspec-sub)))) ;; n-t-i-b ignores the beta, anyways
-                  #`(#,@pat #,pat-sub)))]
+                  #`(#,@pat #,pat-sub (... ...))))]
 
          [(sbspec-sub #:refers-to imports-beta . rest-of-body)
           (begin
@@ -218,7 +218,6 @@
    
    (define import-names (names-imported-in bspec-body))
    (define export-names (names-mentioned-in-beta export-beta))
-
 
    (values
     pat-body
