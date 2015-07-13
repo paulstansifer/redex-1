@@ -239,7 +239,7 @@
     (⇓ · ,p Δ v))))
 
 (module+ test
-  
+    
   (test-equal (term (replace-free (let ([x x] [p q]) x) (x y)))
               (term (let ([x y] [p q]) x)))
   (test-equal (term (replace-free (let ([p q]) x) (x y)))
@@ -379,5 +379,9 @@
                           [five 5])
                       ((Y tri) five))))
               (+ 5 4 3 2 1 0))
+
+  (test-equal (run (term (let ([one 1] [two 2])
+                           (((λ (x) (λ (x) (+ x one))) one) two))))
+              3)
   
   (test-results))
