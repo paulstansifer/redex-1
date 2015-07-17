@@ -97,6 +97,75 @@
                    `pat
                    (all-distinct? distinct-name ...))))
 
+  (define-syntax-rule (aeq lang lhs rhs)
+    ((lambda ()
+       (define-metafunction lang
+         alpha-equiv : any any -> any
+         [(alpha-equiv any any) #t]
+         [(alpha-equiv any_l any_r) #f])
+       
+       (term (alpha-equiv lhs rhs)))))
+
+  (check-equal? (aeq big-language (lambda (x) x) (lambda (x) x)) #t)
+
+  (check-equal? (aeq big-language (lambda (xxxxx) xxxxx) (lambda (y) y)) #t)
+
+  (check-equal? (aeq big-language (lambda (x) x) (lambda (x) y)) #f)
+
+  (check-equal? (aeq big-language 
+                     (lambda (x) (lambda (y) (x y)))
+                     (lambda (y) (lambda (x) (y x)))) 
+                #t)
+  
+  (check-equal? (aeq big-language 
+                     (lambda (y) (lambda (x) (x y)))
+                     (lambda (y) (lambda (x) (y x)))) 
+                #f)
+  
+  (check-equal? (aeq big-language
+                     (x (lambda (x) x))
+                     (y (lambda (y) y)))
+                #f)
+  
+  (check-equal? (aeq big-language
+                     (a (lambda (x) x))
+                     (a (lambda (y) y)))
+                #f)
+  
+  (check-equal? (aeq big-language
+                     (va-vb-lambda (a b c) a b c d)
+                     (va-vb-lambda (x y z) x y z d))
+                #t)
+  
+  (check-equal? (aeq big-language
+                     (va-vb-lambda (a b c) a b c d)
+                     (va-vb-lambda (x y z) x y c d))
+                #f)
+
+  (check-equal? (aeq big-language a (a)) #f)
+
+  (check-equal? (aeq big-language (b) (a)) #f)
+
+  (check-equal? (aeq big-language (((a) a) a) (((b) a) a)) #f)
+  
+  (check-equal? (aeq big-language (((a) a) a) (((a) a) a)) #t)
+
+  (check-equal? (aeq big-language
+                     (let* (cl a x (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c)))
+                     (let* (cl aa x (cl bb (aa 5) (cl cc (bb (aa 6)) no-cl))) (aa (bb cc))))
+                #t)
+
+  (check-equal? (aeq big-language
+                     (let* (cl a x (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c)))
+                     (let* (cl aa x (cl bb (aa 5) (cl cc (bb (a 6)) no-cl))) (aa (bb cc))))
+                #f)
+
+  (check-equal? (aeq big-language
+                     (let* (cl a x (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c)))
+                     (let* (cl aa x (cl bb (aa 5) (cl cc (bb (aa 6)) no-cl))) (aa (bb c))))
+                #f)
+
+
   ;; TODO: the `no-cl` shouldn't be freshened. Doing proper pattern compilation
   ;; should get rid of that problem
   

@@ -55,7 +55,7 @@ See match-a-pattern.rkt for more details
          "ambiguous.rkt"
          (only-in "binding-forms-definitions.rkt" bspec?))
 
-(define-struct compiled-pattern (cp binds-names? skip-dup-check?) #:transparent)
+(define-struct compiled-pattern (cp binds-names? skip-dup-check? lang-α-equal?) #:transparent)
 
 (define caching-enabled? (make-parameter #t))
 
@@ -128,7 +128,7 @@ See match-a-pattern.rkt for more details
                   (compile-pattern/cross? clang (rhs-pattern rhs) #f))
                 (define (add-to-ht ht) 
                   (define nv (cons
-                              (build-compiled-pattern compiled-pattern-proc names)
+                              (build-compiled-pattern compiled-pattern-proc names equal?)
                               (hash-ref ht (nt-name nt))))
                   (hash-set! ht (nt-name nt) nv))
                 (define may-be-non-list? (may-be-non-list-pattern? (rhs-pattern rhs) non-list-nt-table))
@@ -589,12 +589,13 @@ See match-a-pattern.rkt for more details
     (if (compiled-pattern-skip-dup-check? compiled-pattern)
         results
         (and results
-             (let ([filtered (filter-multiples results)])
+             (let ([filtered (filter-multiples results (compiled-pattern-lang-α-equal?
+                                                        compiled-pattern))])
                (and (not (null? filtered))
                     filtered))))))
 
-;; filter-multiples : (listof mtch) -> (listof mtch)
-(define (filter-multiples matches)
+;; filter-multiples : (listof mtch) (exp exp -> boolean) -> (listof mtch)
+(define (filter-multiples matches lang-α-equal?)
   ;(printf "matches ~s\n" matches)
   (let loop ([matches matches]
              [acc null])
@@ -605,15 +606,15 @@ See match-a-pattern.rkt for more details
        ;; skip-dup-check? bolean had been true
        (reverse acc)]
       [else
-       (let ([merged (merge-multiples/remove (car matches))])
+       (let ([merged (merge-multiples/remove (car matches) lang-α-equal?)])
          (if merged
              (loop (cdr matches) (cons merged acc))
              (loop (cdr matches) acc)))])))
 
-;; merge-multiples/remove : bindings -> (union #f bindings)
+;; merge-multiples/remove : bindings (exp exp -> boolean) -> (union #f bindings)
 ;; returns #f if all duplicate bindings don't bind the same thing
 ;; returns a new bindings 
-(define (merge-multiples/remove match)
+(define (merge-multiples/remove match lang-α-equal?)
   (let/ec fail
     (let (
           ;; match-ht : sym -o> sexp
@@ -633,7 +634,7 @@ See match-a-pattern.rkt for more details
                  [(eq? previous-exp uniq)
                   (hash-set! match-ht name exp)]
                  [else
-                  (unless (equal? exp previous-exp)
+                  (unless (lang-α-equal? exp previous-exp)
                     (fail #f))])))]
           [(mismatch-bind? rib)
            (match-define (mismatch-bind name exp nesting-depth) rib)
@@ -669,12 +670,16 @@ See match-a-pattern.rkt for more details
 (define (compile-pattern clang pattern bind-names?)
   (let-values ([(pattern has-hole? has-hide-hole? names) 
                 (compile-pattern/cross? clang pattern bind-names?)])
-    (build-compiled-pattern (if (or has-hole? has-hide-hole? (not (null? names)))
-                                pattern
-                                (convert-matcher pattern))
-                            names)))
+    (build-compiled-pattern 
+     (if (or has-hole? has-hide-hole? (not (null? names)))
+         pattern
+         (convert-matcher pattern))
+     names
+     (if (empty? (compiled-lang-binding-table clang))
+         equal?
+         (λ (lhs rhs) (α-equal? (compiled-lang-binding-table clang) match-pattern lhs rhs))))))
 
-(define (build-compiled-pattern proc names)
+(define (build-compiled-pattern proc names lang-α-equal?)
   (make-compiled-pattern 
    proc
    (null? names)
@@ -684,7 +689,8 @@ See match-a-pattern.rkt for more details
         
         ;; no mismatch names
         (not (for/or ([name (in-list names)])
-                     (pair? name))))))
+                     (pair? name))))
+   lang-α-equal?))
 
 (define (pattern-might-destructure? pattern)
   (match-a-pattern pattern
@@ -717,6 +723,9 @@ See match-a-pattern.rkt for more details
   (define clang-list-ht (compiled-lang-list-ht clang))
   (define has-hole-or-hide-hole-ht (compiled-lang-has-hole-or-hide-hole-ht clang))
   (define binding-forms (compiled-lang-binding-table clang))
+
+  (define lang-α-equal? 
+    (λ (lhs rhs) (α-equal? (compiled-lang-binding-table clang) match-pattern lhs rhs)))
 
   ;; Note that `bind-names?` means that identical names must match identical values, and 
   ;; binding forms specify alpha-equivalence behavior in the user-defined language.
@@ -819,12 +828,14 @@ See match-a-pattern.rkt for more details
             (λ (exp hole-info nesting-depth)
               (match-nt (hash-ref clang-list-ht nt)
                         (hash-ref clang-ht nt)
-                        nt exp hole-info))
+                        nt exp hole-info
+                        lang-α-equal?))
             (λ (exp)
               (match-nt/boolean
                (hash-ref clang-list-ht nt)
                (hash-ref clang-ht nt)
-               nt exp)))
+               nt exp
+               lang-α-equal?)))
         has-hole?
         #f
         '())]
@@ -908,7 +919,7 @@ See match-a-pattern.rkt for more details
               (let ([matches (match-pat exp hole-info nesting-depth)])
                 (and matches
                      (let ([filtered (filter (λ (m) (condition (mtch-bindings m))) 
-                                             (filter-multiples matches))])
+                                             (filter-multiples matches lang-α-equal?))])
                        (if (null? filtered)
                            #f
                            filtered)))))
@@ -927,7 +938,8 @@ See match-a-pattern.rkt for more details
            (λ (exp hole-info nesting-depth)
              (match-nt (hash-ref across-list-ht id)
                        (hash-ref across-ht id)
-                       id exp hole-info))
+                       id exp hole-info
+                       lang-α-equal?))
            #t
            #f
            '())]
@@ -1712,9 +1724,9 @@ See match-a-pattern.rkt for more details
             (mtch-hole match))))
        matches))
 
-;; match-nt : (listof compiled-rhs) (listof compiled-rhs) sym exp hole-info
+;; match-nt : (listof compiled-rhs) (listof compiled-rhs) sym exp hole-info (exp exp -> boolean)
 ;;        -> (union #f (listof bindings))
-(define (match-nt list-rhs non-list-rhs nt term hole-info)
+(define (match-nt list-rhs non-list-rhs nt term hole-info lang-α-equal?)
   (if hole-info
       
       (let loop ([rhss (if (or (null? term) (pair? term))
@@ -1738,7 +1750,7 @@ See match-a-pattern.rkt for more details
                                       ans))))))
                  ans))]
           [else
-           (let ([mth (call-nt-proc/bindings (car rhss) term hole-info)])
+           (let ([mth (call-nt-proc/bindings (car rhss) term hole-info lang-α-equal?)])
              (cond
                [mth
                 (loop (cdr rhss) (append mth ans))]
@@ -1753,27 +1765,27 @@ See match-a-pattern.rkt for more details
         (cond
           [(null? rhss) #f]
           [else
-           (or (call-nt-proc/bindings (car rhss) term hole-info)
+           (or (call-nt-proc/bindings (car rhss) term hole-info lang-α-equal?)
                (loop (cdr rhss)))]))))
 
 (define check-redudancy (make-parameter #f))
 
-(define (match-nt/boolean list-rhs non-list-rhs nt term)
+(define (match-nt/boolean list-rhs non-list-rhs nt term lang-α-equal?)
   (let loop ([rhss (if (or (null? term) (pair? term))
                        list-rhs
                        non-list-rhs)])
     (cond
       [(null? rhss) #f]
       [else
-       (or (call-nt-proc/bool (compiled-pattern-cp (car rhss)) term)
+       (or (call-nt-proc/bool (compiled-pattern-cp (car rhss)) term lang-α-equal?)
            (loop (cdr rhss)))])))
 
-(define (call-nt-proc/bool nt-proc exp)
+(define (call-nt-proc/bool nt-proc exp lang-α-equal?)
   (if (procedure-arity-includes? nt-proc 1)
       (nt-proc exp)
-      (and (remove-bindings/filter (nt-proc exp #f 0)) #t)))
+      (and (remove-bindings/filter (nt-proc exp #f 0) lang-α-equal?) #t)))
 
-(define (call-nt-proc/bindings compiled-pattern exp hole-info)
+(define (call-nt-proc/bindings compiled-pattern exp hole-info lang-α-equal?)
   (define nt-proc (compiled-pattern-cp compiled-pattern))
   (define skip-dup? (compiled-pattern-skip-dup-check? compiled-pattern))
   (define has-names? (compiled-pattern-binds-names? compiled-pattern))
@@ -1795,12 +1807,12 @@ See match-a-pattern.rkt for more details
                    res)
               res))]
     [else
-     (remove-bindings/filter (nt-proc exp hole-info 0))]))
+     (remove-bindings/filter (nt-proc exp hole-info 0) lang-α-equal?)]))
 
-;; remove-bindings/filter : (union #f (listof mtch)) -> (union #f (listof mtch))
-(define (remove-bindings/filter matches)
+;; remove-bindings/filter : (union #f (listof mtch)) (exp exp -> boolean) -> (union #f (listof mtch))
+(define (remove-bindings/filter matches lang-α-equal?)
   (and matches
-       (let ([filtered (filter-multiples matches)])
+       (let ([filtered (filter-multiples matches equal?)])
          ;(printf ">> ~s\n=> ~s\n\n" matches filtered)
          (and (not (null? filtered))
               (map (λ (match)

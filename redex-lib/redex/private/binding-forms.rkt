@@ -7,20 +7,66 @@
 
 ;; == public interface ==
 
-(provide freshen)
+(provide freshen α-equal?)
+
 
 (define bf-table (make-parameter "binding-forms table not defined"))
 (define pattern-matcher (make-parameter "pattern matcher not defined"))
+(define name-generator (make-parameter "name generator not defined"))
+(define all-the-way-down? (make-parameter "all-the-way-downness not defined"))
 
 ;; Where `bindings` is understood in the "matcher.rkt" sense, not in the "binding forms sense":
-
-
 ;; freshen : (listof (list compiled-pattern bspec)) 
 ;; (compiled-pattern redex-val -> (union #f mtch)) redex-val -> redex-val
 (define (freshen language-bf-table match-pattern redex-val)
   (parameterize ([bf-table language-bf-table]
-                 [pattern-matcher match-pattern]) 
+                 [pattern-matcher match-pattern]
+                 [name-generator gensym])
                 (first (rec-freshen redex-val #f #t))))
+
+(define (α-equal? language-bf-table match-pattern redex-val-lhs redex-val-rhs)
+  (cond
+   [(eq? redex-val-lhs redex-val-rhs) #t]
+   [(and (symbol? redex-val-lhs) (symbol? redex-val-rhs)) (symbol=? redex-val-lhs redex-val-rhs)]
+   [(or (xor (symbol? redex-val-lhs)
+             (symbol? redex-val-rhs))
+        (xor (list? redex-val-lhs)
+             (list? redex-val-rhs))) #f]
+   [else 
+    (define canonical-name-list '())
+    
+
+
+    (parameterize 
+     ([bf-table language-bf-table]
+      [pattern-matcher match-pattern])
+
+     (define canonical-lhs 
+       (parameterize
+        ([name-generator 
+          (λ (orig-name)
+             (define new-name (gensym orig-name))
+             (set! canonical-name-list (cons new-name canonical-name-list))
+             new-name)])
+        
+        (first (rec-freshen redex-val-lhs #f #t))))
+
+     (set! canonical-name-list (reverse canonical-name-list))
+
+
+     (define canonical-rhs
+       (parameterize
+        ([name-generator
+          (λ (orig-name)
+             (if (empty? canonical-name-list)
+                 (gensym 'orig-name)
+                 (match-let ([`(,new-name . ,remaining-canonical-names) canonical-name-list])
+                   (set! canonical-name-list remaining-canonical-names)
+                   new-name)))])
+        
+        (first (rec-freshen redex-val-rhs #f #t))))
+    
+     (equal? canonical-lhs canonical-rhs))]))
 
 
 ;; == pattern-dispatch ==
@@ -240,9 +286,7 @@
         (define fresh-val
           (if noop?
               redex-val
-              ;; Sometimes people ask "Why don't you just freshen the names?".
-              ;; Well, here we just freshen the names!
-              (gensym redex-val)))
+              ((name-generator) redex-val)))
         `(,fresh-val ((,redex-val ,fresh-val)))]
        [else `(,redex-val ())])))
 
@@ -255,9 +299,18 @@
      (define nt-name (bind-name b))
 
      (define ...-depth (second (assoc nt-name (bspec-transcription-depths bs))))
-     (define sub-noop? (or noop?
-                           (not (xor (member nt-name (bspec-exported-nts bs))
-                                     top-level?))))
+     (define sub-exported? (member nt-name (bspec-exported-nts bs)))
+     
+     ;; I had to build a Karnaugh Map to understand this, but the gist is
+     ;; that, from the top level, exported subterms must be a no-op,
+     ;; otherwise exported subterms must be the same as their parents.
+     ;; Non-exported subterms can safely be freshened, so it happens
+     ;; if `all-the-way-down?` is true, but doesn't have to otherwise.
+     (define sub-noop? (if top-level?
+                           sub-exported?
+                           (if sub-exported?
+                               noop?
+                               (not (all-the-way-down?)))))
      
      (and (member nt-name (bspec-ported-nts bs))
           (make-bind
@@ -339,8 +392,9 @@
 
   ;; subterms have no binding structure this way:
   (parameterize ([bf-table `()]
-                 [pattern-matcher #f])
-
+                 [pattern-matcher #f]
+                 [name-generator gensym]
+                 [all-the-way-down? #f])
 
     (check-equal?
      (rec-freshen-nospec `(a b c) #f #t)
