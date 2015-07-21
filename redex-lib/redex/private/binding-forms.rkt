@@ -13,6 +13,8 @@
 (define bf-table (make-parameter "binding-forms table not defined"))
 (define pattern-matcher (make-parameter "pattern matcher not defined"))
 (define name-generator (make-parameter "name generator not defined"))
+
+;; For α-equivalence testing, we walk the whole term at once.
 (define all-the-way-down? (make-parameter "all-the-way-downness not defined"))
 
 ;; Where `bindings` is understood in the "matcher.rkt" sense, not in the "binding forms sense":
@@ -21,8 +23,9 @@
 (define (freshen language-bf-table match-pattern redex-val)
   (parameterize ([bf-table language-bf-table]
                  [pattern-matcher match-pattern]
-                 [name-generator gensym])
-                (first (rec-freshen redex-val #f #t))))
+                 [name-generator gensym]
+                 [all-the-way-down? #f])
+                (first (rec-freshen redex-val #f #t #f))))
 
 (define (α-equal? language-bf-table match-pattern redex-val-lhs redex-val-rhs)
   (cond
@@ -39,7 +42,8 @@
 
     (parameterize 
      ([bf-table language-bf-table]
-      [pattern-matcher match-pattern])
+      [pattern-matcher match-pattern]
+      [all-the-way-down? #t])
 
      (define canonical-lhs 
        (parameterize
@@ -49,7 +53,7 @@
              (set! canonical-name-list (cons new-name canonical-name-list))
              new-name)])
         
-        (first (rec-freshen redex-val-lhs #f #t))))
+        (first (rec-freshen redex-val-lhs #f #t #f))))
 
      (set! canonical-name-list (reverse canonical-name-list))
 
@@ -64,7 +68,7 @@
                    (set! canonical-name-list remaining-canonical-names)
                    new-name)))])
         
-        (first (rec-freshen redex-val-rhs #f #t))))
+        (first (rec-freshen redex-val-rhs #f #t #f))))
     
      (equal? canonical-lhs canonical-rhs))]))
 
@@ -77,7 +81,6 @@
         (match bf-table
                [`((,compiled-pat ,bspec) . ,rest)
                 (define match-res ((pattern-matcher) compiled-pat redex-val))
-                
                 (match match-res
                   [#f (loop rest)]
                   [`(,m) (fn (bindings-table (mtch-bindings m)) bspec)])]
@@ -276,13 +279,16 @@
            (a (bb (c (dd (ee (ff g))))))))))
 
 
-(define (rec-freshen-nospec redex-val noop? top-level?)
-  (if top-level?
+(define (rec-freshen-nospec redex-val noop? top-level? assume-binder?)
+  (if (and top-level? (not (all-the-way-down?)))
       `(,redex-val ())
       (cond
-       ;; no exports (user imported a plain list for some reason)
-       [(list? redex-val) `(,redex-val ())]
-       [(symbol? redex-val)
+       ;; no exports
+       [(list? redex-val) 
+        `(,(if (all-the-way-down?)
+               (map (λ (elt) (car (rec-freshen elt #f #f #f))) redex-val)
+               redex-val) ())]
+       [(and (symbol? redex-val) assume-binder?)
         (define fresh-val
           (if noop?
               redex-val
@@ -292,7 +298,8 @@
 
 ;; freshen-subterms : ... -> (listof bind)
 ;; The expressions in the binds are the return values of `rec-freshen`
-;; (i.e., a pair of a new value and its corresponding substitution)
+;; (i.e., a pair of a new value and its corresponding substitution),
+;; for those subterms that are "ported" (i.e. imported or exported)
 (define (freshen-subterms red-match bs noop? top-level?)
   (filter-map
    (λ (b)
@@ -300,10 +307,14 @@
 
      (define ...-depth (second (assoc nt-name (bspec-transcription-depths bs))))
      (define sub-exported? (member nt-name (bspec-exported-nts bs)))
+     (define sub-ported? (not (not (member nt-name (bspec-ported-nts bs)))))
+
      
      ;; I had to build a Karnaugh Map to understand this, but the gist is
-     ;; that, from the top level, exported subterms must be a no-op,
-     ;; otherwise exported subterms must be the same as their parents.
+     ;; that, from the top level, exported subterms must be a noop 
+     ;; (since their exported binders are free),
+     ;; and otherwise *exported* subterms must be the same as their parents.
+     ;; (since whether they are exported the same distance as the parents)
      ;; Non-exported subterms can safely be freshened, so it happens
      ;; if `all-the-way-down?` is true, but doesn't have to otherwise.
      (define sub-noop? (if top-level?
@@ -312,12 +323,15 @@
                                noop?
                                (not (all-the-way-down?)))))
      
-     (and (member nt-name (bspec-ported-nts bs))
+
+
+     
+     (and (or sub-ported? (all-the-way-down?))
           (make-bind
            nt-name
            (let handle-... ([depth ...-depth] [exp (bind-exp b)])
              (if (= depth 0)
-                 (rec-freshen exp sub-noop? #f)
+                 (rec-freshen exp sub-noop? #f sub-ported?)
                  (map (λ (sub-exp) (handle-... (- depth 1) sub-exp)) exp))))))
    red-match))
 
@@ -358,8 +372,9 @@
           (rm-lookup-or 
            nt freshened-subterms 
            (let ([plain-leaf-value (rm-lookup-or nt red-match nt)])
-             (if (symbol? plain-leaf-value)
-                 `(,plain-leaf-value ()) ;; atoms that aren't *ported are references
+             (if (or (symbol? plain-leaf-value) #| atoms that aren't *ported are plain references |#
+                     (all-the-way-down? #| it got freshened, anyways |#))
+                 `(,plain-leaf-value ())
                  
                  ;; TODO: this minor corner case might slow things down.
                  ;; Suggested optimization: bail out early in the very
@@ -372,7 +387,7 @@
                  ;; have no use at all! But our clients might implement
                  ;; a perfectly reasonable language, which their clients
                  ;; will use in this way, so it should work right.
-                 (rec-freshen plain-leaf-value #f #f)))))])))
+                 (rec-freshen plain-leaf-value #f #f #f)))))])))
 
   (define freshened-exports 
     (interp-beta-as-fs-subst (bspec-export-beta bs) freshened-subterms))
@@ -381,9 +396,10 @@
 
 ;; rec-freshen : redex-value bool bool -> (list redex-value subst)
 ;; If noop? is true, don't freshen; return the input 
-(define (rec-freshen redex-val n? t-l?)
-  (dispatch redex-val (λ (rv b) (rec-freshen-spec rv b n? t-l?))
-            (λ (rv) (rec-freshen-nospec rv n? t-l?))))
+(define (rec-freshen redex-val n? t-l? a-b?)
+  ;; assume-binder? is only relevant for atoms, which never have specs
+  (dispatch redex-val (λ (rv b) (rec-freshen-spec rv b n? t-l?)) 
+            (λ (rv) (rec-freshen-nospec rv n? t-l? a-b?)))) 
 
 
 (module+ test
@@ -397,21 +413,25 @@
                  [all-the-way-down? #f])
 
     (check-equal?
-     (rec-freshen-nospec `(a b c) #f #t)
+     (rec-freshen-nospec `(a b c) #f #t #f)
      `((a b c) ()))
     
     (check-equal?
-     (rec-freshen-nospec `(a b c) #f #f)
+     (rec-freshen-nospec `(a b c) #f #f #f)
      `((a b c) ()))
 
     (check-equal?
-     (rec-freshen-nospec `a #f #t)
+     (rec-freshen-nospec `a #f #t #f)
      `(a ()))
 
     (check-match
-     (rec-freshen-nospec `a #f #f)
+     (rec-freshen-nospec `a #f #f #t)
      `(,aa ((a ,aa)))
      (all-distinct? aa `a))
+
+    (check-match
+     (rec-freshen-nospec `a #f #f #f)
+     `(a ()))
 
     (check-match 
      (rec-freshen-spec 

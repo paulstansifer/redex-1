@@ -97,6 +97,8 @@
                    `pat
                    (all-distinct? distinct-name ...))))
 
+  ;; alpha-equivalence tests
+
   (define-syntax-rule (aeq lang lhs rhs)
     ((lambda ()
        (define-metafunction lang
@@ -121,6 +123,11 @@
                      (lambda (y) (lambda (x) (x y)))
                      (lambda (y) (lambda (x) (y x)))) 
                 #f)
+
+  (check-equal? (aeq big-language 
+                     (lambda (y) (lambda (a) a))
+                     (lambda (y) (lambda (b) b))) 
+                #t)
   
   (check-equal? (aeq big-language
                      (x (lambda (x) x))
@@ -130,7 +137,7 @@
   (check-equal? (aeq big-language
                      (a (lambda (x) x))
                      (a (lambda (y) y)))
-                #f)
+                #t)
   
   (check-equal? (aeq big-language
                      (va-vb-lambda (a b c) a b c d)
@@ -165,6 +172,28 @@
                      (let* (cl aa x (cl bb (aa 5) (cl cc (bb (aa 6)) no-cl))) (aa (bb c))))
                 #f)
 
+  (check-equal? (aeq big-language
+                     ((lambda (x) x) 8)
+                     ((lambda (y) y) 8))
+                #t)
+
+  (check-equal? (aeq big-language
+                     ((lambda (x) (lambda (y) (x y))) 8)
+                     ((lambda (y) (lambda (x) (x y))) 8))
+                #f)
+
+  (check-equal? (aeq big-language
+                     (pile-o-binders a b c)
+                     (pile-o-binders x y z))
+                #f)
+
+  ;; test for https://github.com/paulstansifer/redex/issues/10
+  #;
+  (check-equal? (aeq big-language
+                     ((pile-o-binders a b c))
+                     ((pile-o-binders x y z)))
+                #f)
+  
 
   ;; TODO: the `no-cl` shouldn't be freshened. Doing proper pattern compilation
   ;; should get rid of that problem
@@ -494,6 +523,7 @@
     (extra-lambda (x) expr #:refers-to x))
 
 
+  ;; TODO: test a language extension consisting only of #:binding-forms
 
   (define (all-distinct-vars? . lst)
     (and (equal? lst (remove-duplicates lst))
