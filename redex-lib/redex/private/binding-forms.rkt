@@ -286,7 +286,8 @@
        ;; no exports
        [(list? redex-val) 
         `(,(if (all-the-way-down?)
-               (map (λ (elt) (car (rec-freshen elt #f #f #f))) redex-val)
+               ;; `noop?` is true because unused exports are treated as free
+               (map (λ (elt) (car (rec-freshen elt #f #t #f))) redex-val)
                redex-val) ())]
        [(and (symbol? redex-val) assume-binder?)
         (define fresh-val
@@ -322,8 +323,6 @@
                            (if sub-exported?
                                noop?
                                (not (all-the-way-down?)))))
-     
-
 
      
      (and (or sub-ported? (all-the-way-down?))
@@ -371,23 +370,11 @@
          (first ;; discard the substitution; we only need the freshened value
           (rm-lookup-or 
            nt freshened-subterms 
-           (let ([plain-leaf-value (rm-lookup-or nt red-match nt)])
-             (if (or (symbol? plain-leaf-value) #| atoms that aren't *ported are plain references |#
-                     (all-the-way-down? #| it got freshened, anyways |#))
-                 `(,plain-leaf-value ())
-                 
-                 ;; TODO: this minor corner case might slow things down.
-                 ;; Suggested optimization: bail out early in the very
-                 ;; common case where plain-leaf-value exports nothing.
-                 ;; 
-                 ;; What's going on here is that, if an nt has free binders,
-                 ;; but doesn't get imported or exported, they still need to
-                 ;; be freshened. (effectively, they're imported into zero places)
-                 ;; It's a shame, binders that don't get imported/exported
-                 ;; have no use at all! But our clients might implement
-                 ;; a perfectly reasonable language, which their clients
-                 ;; will use in this way, so it should work right.
-                 (rec-freshen plain-leaf-value #f #f #f)))))])))
+           ;; In Romeo, unused binders (i.e., exported but never imported)
+           ;; are treated as bound. For Redex purposes, it's important that they be
+           ;; free, so that putting things into plain lists doesn't unexpectedly bind things.
+           ;; See https://github.com/paulstansifer/redex/issues/10
+           `(,(rm-lookup-or nt red-match nt) ())))])))
 
   (define freshened-exports 
     (interp-beta-as-fs-subst (bspec-export-beta bs) freshened-subterms))

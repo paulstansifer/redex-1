@@ -182,17 +182,32 @@
                      ((lambda (y) (lambda (x) (x y))) 8))
                 #f)
 
+  ;; tests for https://github.com/paulstansifer/redex/issues/10
+
+  (check-equal? (aeq big-language
+                     (1 2 3 (cl f (lambda (x) x) no-cl))
+                     (1 2 3 (cl f (lambda (y) y) no-cl)))
+                #t)
+
+  (check-equal? (aeq big-language
+                     (1 2 3 (cl f (lambda (x) x) no-cl))
+                     (1 2 3 (cl g (lambda (x) x) no-cl)))
+                #f)
+
   (check-equal? (aeq big-language
                      (pile-o-binders a b c)
                      (pile-o-binders x y z))
                 #f)
 
-  ;; test for https://github.com/paulstansifer/redex/issues/10
-  #;
   (check-equal? (aeq big-language
                      ((pile-o-binders a b c))
                      ((pile-o-binders x y z)))
                 #f)
+
+  (destr-test
+   (1 2 3 (cl f (lambda (x) x) no-cl))
+   (1 2 3 (cl f (lambda (,xx) ,xx) ,no-cl))
+   ('f 'x xx))
   
 
   ;; TODO: the `no-cl` shouldn't be freshened. Doing proper pattern compilation
