@@ -61,7 +61,10 @@
          test-->
          test-->>∃ (rename-out [test-->>∃ test-->>E])
          test-predicate
-         test-results)
+         test-results
+         
+         default-language
+         alpha-equivalent?)
 
 (provide redex-check
          generate-term

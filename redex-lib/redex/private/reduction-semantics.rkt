@@ -12,6 +12,8 @@
          "search.rkt"
          "lang-struct.rkt"
          "binding-forms-compiler.rkt"
+         (only-in "binding-forms.rkt"
+                  α-equal?)
          (only-in "binding-forms-definitions.rkt"
                   shadow rib nothing)
          (for-syntax "cycle-check.rkt"
@@ -2474,6 +2476,7 @@
 (define-for-syntax test-equiv-default
   #'(default-equiv))
 
+
 (define-syntax (test-->> stx)
   (syntax-parse stx
     [(form red:expr
@@ -2596,7 +2599,18 @@
     (eprintf "  ~v does not hold for\n  ~v\n" 
              pred arg)))
 
-(define default-equiv (make-parameter equal?))
+;; For organizational purposes, this is a function on terms, but 
+;; it has to have access to pattern-matching.
+(define (alpha-equivalent? lang lhs rhs)
+  (α-equal? (language-id-binding-table lang) match-pattern lhs rhs))
+
+(define default-language (make-parameter #f))
+(define default-equiv
+  (make-parameter 
+   (λ (lhs rhs)
+      (if (default-language)
+          (alpha-equivalent? (default-language) lhs rhs)
+          (equal? lhs rhs)))))
 
 (define-syntax (test-equal stx)
   (syntax-case stx ()
@@ -2682,7 +2696,9 @@
          test-->>∃ (rename-out [test-->>∃ test-->>E])
          test-predicate
          test-results
-         default-equiv)
+         default-equiv
+         default-language
+         alpha-equivalent?)
 
 
 (provide language-nts
