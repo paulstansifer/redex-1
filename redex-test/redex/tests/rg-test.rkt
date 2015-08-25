@@ -1,6 +1,7 @@
 #lang racket
 
 (require "test-util.rkt"
+         (only-in redex/reduction-semantics redex-match)
          redex/private/reduction-semantics
          redex/private/judgment-form
          redex/private/matcher
@@ -323,6 +324,7 @@
     (n number)
     (q literal)
     (z 4))
+
   (test
    (generate-term/decisions 
     lang a 2 0
@@ -353,12 +355,12 @@
          ((0 ..._!_1) ... (1 ..._!_1) ...)
          5 0
          (decisions #:seq (list (λ (_) 2) (λ (_) 3) (λ (_) 4) (λ (_) 2) (λ (_) 3) (λ (_) 4)
-                                (λ (_) 2) (λ (_) 3) (λ (_) 4) (λ (_) 1) (λ (_) 3))))
-        '((0 0 0) (0 0 0 0) (1 1 1)))
+                                (λ (_) 2) (λ (_) 3) (λ (_) 4) (λ (_) 1) (λ (_) 5))))
+        '((0 0 0) (0 0 0 0) (1 1 1 1 1)))
   (test (generate-term/decisions 
          lang ((0 ..._!_1) ... (1 ..._!_1) ...) 5 0
-         (decisions #:seq (list (λ (_) 2) (λ (_) 3) (λ (_) 4) (λ (_) 2) (λ (_) 3) (λ (_) 5))))
-        '((0 0 0) (0 0 0 0) (1 1 1) (1 1 1 1 1))))
+         (decisions #:seq (list (λ (_) 2) (λ (_) 3) (λ (_) 4) (λ (_) 2) (λ (_) 2) (λ (_) 5))))
+        '((0 0 0) (0 0 0 0) (1 1) (1 1 1 1 1))))
 
 (let ()
   (define-language lang (e (variable-prefix pf)))
@@ -498,20 +500,9 @@
     (C (c hole))
     (D (d hole))
     (E (e hole))
-    (F (f hole))
-    
-    (p (in-hole (hole hole) 4))
-    (q (in-hole (hole ... hole) 4)))
+    (F (f hole)))
   
-  (test (generate-term L (in-hole 3 4) 5) 3)
-  (test (raised-exn-msg 
-         exn:fail? 
-         (test-match L p (generate-term L p 5)))
-        #rx"two holes")
-  (test (raised-exn-msg 
-         exn:fail?
-         (test-match L q (generate-term/decisions L q 5 0 (decisions #:seq (list (λ (_) 1))))))
-        #rx"two holes")
+  (test (generate-term L (in-hole hole 3) 5) 3)
   
   (let ([bindings #f])
     (test (generate-term 
@@ -572,19 +563,13 @@
          empty any 5 0 (decisions #:nt (patterns first)
                                   #:any (λ (langc sexpc) (values sexpc 'sexp))
                                   #:var (list (λ _ 'x))))
-        'x)
-  (test 
-   (generate-term/decisions 
-    empty (in-hole (any hole) 7) 5 0
-    (decisions #:any (list (λ (_ sexp) (values sexp 'sexp)))
-               #:nt (patterns fourth)))
-   (term (hole 7))))
+        'x))
 
 ;; `hide-hole' pattern
 (let ()
   (define-language lang
-    (e (hide-hole (in-hole ((hide-hole hole) hole) 1))))
-  (test (generate-term lang e 5) (term (hole 1)))
+    (e (hide-hole (in-hole ((hide-hole hole) hole) hole))))
+  (test (generate-term lang e 5) (term (hole hole)))
   (test (plug (generate-term lang (hide-hole hole) 0) 3) 3))
 
 (define (output-error-port thunk)
@@ -775,18 +760,6 @@
   
   (let ()
     (define-metafunction lang
-      [(f) 
-       dontcare
-       (side-condition #f)])
-    (test (raised-exn-msg
-           exn:fail:redex:generation-failure?
-           (redex-check lang any #t 
-                        #:attempts 1
-                        #:source f))
-          #px"unable to generate LHS of clause at .*:\\d+:\\d+"))
-  
-  (let ()
-    (define-metafunction lang
       [(mf d e) dontcare])
     (test (output
            (λ ()
@@ -934,6 +907,15 @@
   ;; just make sure no errors
   (redex-check L cap-x #t #:attempts 10))
 
+(let ()
+  ;; just make sure no errors
+  (define-language Lambda
+    (e ::= (lambda (x_!_1 x_!_1 ...) 1))
+    (x ::= a))
+  (define e? (redex-match Lambda e))
+  (redex-check Lambda e #:ad-hoc (e? (term e)) #:print? #f)
+  (void))
+
 ;; check-reduction-relation
 (let ()
   (define-language L
@@ -975,17 +957,17 @@
                    L
                    (--> (name t (number_1 number_3))
                         dontcare
-                        (side-condition (set! generated (cons (term t) generated)))
                         (where number_1 4)
                         (where number_2 number_1)
                         (where number_3 number_2)))])
           (parameterize ([generation-decisions 
-                          (decisions #:num (list (λ _ 3) (λ _ 4) 
-                                                 (λ _ 4) (λ _ 3)
-                                                 (λ _ 4) (λ _ 4)))])
-            (check-reduction-relation R (λ (_) #t) #:attempts 1 #:print? #f))
+                          (decisions #:num (list (λ _ 3) (λ _ 4)))])
+            (check-reduction-relation
+             R
+             (λ (t) (set! generated (cons t generated)))
+             #:attempts 1 #:print? #f))
           generated)
-        '((4 4) (4 3) (3 4)))
+        '((3 4)))
   
   ; Extension reinterprets the LHSs of the base relation
   ; relative to the new language.
@@ -1084,7 +1066,7 @@
     (test (output
            (λ ()
              (parameterize ([generation-decisions 
-                             (decisions #:num (build-list 5 (λ (x) (λ _ x))))])
+                             (decisions #:num (build-list 5 (λ (x) (λ _ 4))))])
                (check-reduction-relation 
                 T (curry equal? '(9 4)) 
                 #:attempts 1))))
@@ -1145,20 +1127,7 @@
             generated) 
           (reverse '((1) (2)))))
   
-  (test
-   (let/ec k
-     (define-language L (n 2))
-     (define-metafunction L
-       [(f n)
-        n
-        (where number_2 ,(add1 (term n)))
-        (where number_3 ,(add1 (term number_2)))
-        (side-condition (k (term number_3)))]
-       [(f any) 0])
-     (check-metafunction f (λ (_) #t)))
-   4)
-  
-  (let ()
+    (let ()
     (define-language L 
       ((m n) number))
     (define-metafunction L
@@ -1174,19 +1143,19 @@
   (test (let ([generated null])
           (define-language L)
           (define-metafunction L
-            [(f (name t (number_1 number_3)))
+            [(f (number_1 number_3))
              dontcare
-             (side-condition (set! generated (cons (term t) generated)))
              (where number_1 4)
              (where number_2 number_1)
              (where number_3 number_2)])
           (parameterize ([generation-decisions 
-                          (decisions #:num (list (λ _ 3) (λ _ 4) 
-                                                 (λ _ 4) (λ _ 3)
-                                                 (λ _ 4) (λ _ 4)))])
-            (check-metafunction f (λ (_) #t) #:attempts 1 #:print? #f))
+                          (decisions #:num (list (λ _ 3) (λ _ 4) ))])
+            (check-metafunction f (λ (arg)
+                                    (set! generated (cons arg generated))
+                                    #t)
+                                #:attempts 1 #:print? #f))
           generated)
-        '((4 4) (4 3) (3 4)))
+        '(((3 4))))
   
   (test (let/ec k
           (define-language L (n number))

@@ -29,6 +29,7 @@
          language-id-nts
          language-id-binding-table
          language-id-nt-identifiers
+         language-id-nt-hole-map
          pattern-symbols
          
          build-disappeared-use)
@@ -46,7 +47,8 @@
 
 (define-struct judgment-form (name mode proc mk-proc lang lws rule-names 
                                    gen-clauses mk-gen-clauses term-proc relation?
-                                   cache)
+                                   cache transformer)
+  #:property prop:procedure (struct-field-index transformer)
   #:transparent)
 
 (define-struct defined-term (value))
@@ -63,9 +65,8 @@
     (raise-syntax-error #f "not allowed in an expression context" stx)))
 
 (define-values (language-id make-language-id language-id? language-id-get language-id-set) 
-  (make-struct-type 'language-id #f 4 0 #f '() #f 0))
+  (make-struct-type 'language-id #f 5 0 #f '() #f 0))
 
-(define (language-id-binding-table stx id) (language-id-getter stx id 3))
 (define (language-id-nts stx id) (language-id-getter stx id 1))
 (define (language-id-getter stx id n)
   (unless (identifier? stx)
@@ -76,6 +77,8 @@
       (raise-syntax-error id "expected an identifier defined by define-language" stx))
     (language-id-get (set!-transformer-procedure val) n)))
 (define (language-id-nt-identifiers stx id) (language-id-getter stx id 2))
+(define (language-id-nt-hole-map stx id) (language-id-getter stx id 3))
+(define (language-id-binding-table stx id) (language-id-getter stx id 4))
 
 (define pattern-symbols '(any number natural integer real string variable 
                               variable-not-otherwise-mentioned hole symbol))

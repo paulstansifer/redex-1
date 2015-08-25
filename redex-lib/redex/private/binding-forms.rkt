@@ -29,17 +29,17 @@
 
 (define (α-equal? language-bf-table match-pattern redex-val-lhs redex-val-rhs)
   (cond
+   ;; short-circuit on some easy cases:
    [(eq? redex-val-lhs redex-val-rhs) #t]
    [(and (symbol? redex-val-lhs) (symbol? redex-val-rhs)) (symbol=? redex-val-lhs redex-val-rhs)]
    [(or (xor (symbol? redex-val-lhs)
              (symbol? redex-val-rhs))
         (xor (list? redex-val-lhs)
              (list? redex-val-rhs))) #f]
+
    [else 
     (define canonical-name-list '())
     
-
-
     (parameterize 
      ([bf-table language-bf-table]
       [pattern-matcher match-pattern]
@@ -47,7 +47,7 @@
 
      (define canonical-lhs 
        (parameterize
-        ([name-generator 
+        ([name-generator ;; record the names generated in order
           (λ (orig-name)
              (define new-name (gensym orig-name))
              (set! canonical-name-list (cons new-name canonical-name-list))
@@ -55,15 +55,15 @@
         
         (first (rec-freshen redex-val-lhs #f #t #f))))
 
-     (set! canonical-name-list (reverse canonical-name-list))
+     (set! canonical-name-list (reverse canonical-name-list)) ;; we generated it back-to-front
 
 
-     (define canonical-rhs
+     (define canonical-rhs 
        (parameterize
-        ([name-generator
+        ([name-generator ;; re-use the generated names... until we run out 
           (λ (orig-name)
              (if (empty? canonical-name-list)
-                 (gensym 'orig-name)
+                 (gensym orig-name) ;; At this point, we know the answer will be #f
                  (match-let ([`(,new-name . ,remaining-canonical-names) canonical-name-list])
                    (set! canonical-name-list remaining-canonical-names)
                    new-name)))])
@@ -381,7 +381,7 @@
 
   `(,freshened-body ,freshened-exports))
 
-;; rec-freshen : redex-value bool bool -> (list redex-value subst)
+;; rec-freshen : redex-value bool bool bool -> (list redex-value subst)
 ;; If noop? is true, don't freshen; return the input 
 (define (rec-freshen redex-val n? t-l? a-b?)
   ;; assume-binder? is only relevant for atoms, which never have specs
