@@ -68,7 +68,8 @@
          test-results
          
          default-language
-         alpha-equivalent?)
+         alpha-equivalent?
+         substitute)
 
 (provide redex-check
          generate-term

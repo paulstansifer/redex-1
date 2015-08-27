@@ -13,7 +13,7 @@
          "lang-struct.rkt"
          "binding-forms-compiler.rkt"
          (only-in "binding-forms.rkt"
-                  α-equal?)
+                  α-equal? safe-subst)
          (only-in "binding-forms-definitions.rkt"
                   shadow rib nothing)
          (for-syntax "cycle-check.rkt"
@@ -2698,10 +2698,15 @@
     (eprintf/value-at-end "  ~v does not hold for"
                           pred arg)))
 
-;; For organizational purposes, this is a function on terms, but 
-;; it has to have access to pattern-matching.
+;; I'm not sure if these two functions should be here, but they need to have 
+;; access to `match-pattern` to work.
 (define (alpha-equivalent? lang lhs rhs)
   (α-equal? (compiled-lang-binding-table lang) match-pattern lhs rhs))
+
+
+
+(define (substitute lang val old-var new-val)
+  (safe-subst (compiled-lang-binding-table lang) match-pattern val old-var new-val))
 
 (define default-language (make-parameter #f))
 (define default-equiv
@@ -2821,7 +2826,8 @@
          test-results
          default-equiv
          default-language
-         alpha-equivalent?)
+         alpha-equivalent?
+         substitute)
 
 
 (provide language-nts

@@ -7,7 +7,7 @@
 
 ;; == public interface ==
 
-(provide freshen α-equal?)
+(provide freshen α-equal? safe-subst)
 
 
 (define bf-table (make-parameter "binding-forms table not defined"))
@@ -71,6 +71,19 @@
         (first (rec-freshen redex-val-rhs #f #t #f))))
     
      (equal? canonical-lhs canonical-rhs))]))
+
+(define (safe-subst language-bf-table match-pattern redex-val redex-val-old-var redex-val-new-val)
+  (parameterize
+   ([bf-table language-bf-table]
+    [pattern-matcher match-pattern]
+    [name-generator gensym]
+    [all-the-way-down? #t])
+
+   (let loop [(v (first (rec-freshen redex-val #f #t #f)))]
+     (cond
+      [(list? v) (map loop v)]
+      [(eq? redex-val-old-var v) redex-val-new-val]
+      [else v]))))
 
 
 ;; == pattern-dispatch ==
