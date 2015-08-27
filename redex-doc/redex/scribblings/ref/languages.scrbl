@@ -157,3 +157,19 @@ defined by this language.
 Returns @racket[#t] if its argument was produced by @racket[language], @racket[#f]
 otherwise.
 }
+
+@defparam[default-lang lang (or/c false/c compiled-lang?)]{
+The value of this parameter is used by @racket[alpha-equivalent?] to determine what 
+language to calculate alpha-equivalence in. By default, it is @racket[#f], which
+acts as if it were a language with no binding forms. In that case, alpha-equivalence
+is the same thing as @racket[equal?].
+}
+
+@defproc[(alpha-equivalent? [lhs any/c] [rhs any/c]) boolean?]{
+Returns @racket[#t] if (according to the binding specification in @racket[default-lang])
+the bound names in @racket[lhs] and @racket[rhs] have the same structure, and, 
+in everything but bound names, they are @racket[equal?]. If @racket[default-lang]
+is @racket[#f] or has no binding forms, terms have no bound names and therefore
+@racket[alpha-equivalent?] is the same as @racket[equal?].
+}
+

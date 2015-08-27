@@ -99,111 +99,105 @@
 
   ;; alpha-equivalence tests
 
-  (define-syntax-rule (aeq lang lhs rhs)
-    ((lambda ()
-       (define-metafunction lang
-         alpha-equiv : any any -> any
-         [(alpha-equiv any any) #t]
-         [(alpha-equiv any_l any_r) #f])
-       
-       (term (alpha-equiv lhs rhs)))))
+  (parameterize 
+   [(default-language big-language)]
 
-  (check-equal? (aeq big-language (lambda (x) x) (lambda (x) x)) #t)
+   (check-equal? (alpha-equivalent? (lambda (x) x) (lambda (x) x)) #t)
 
-  (check-equal? (aeq big-language (lambda (xxxxx) xxxxx) (lambda (y) y)) #t)
+   (check-equal? (alpha-equivalent? (lambda (xxxxx) xxxxx) (lambda (y) y)) #t)
 
-  (check-equal? (aeq big-language (lambda (x) x) (lambda (x) y)) #f)
+   (check-equal? (alpha-equivalent? (lambda (x) x) (lambda (x) y)) #f)
 
-  (check-equal? (aeq big-language 
-                     (lambda (x) (lambda (y) (x y)))
-                     (lambda (y) (lambda (x) (y x)))) 
-                #t)
-  
-  (check-equal? (aeq big-language 
-                     (lambda (y) (lambda (x) (x y)))
-                     (lambda (y) (lambda (x) (y x)))) 
-                #f)
+   (check-equal? (alpha-equivalent? 
+                      (lambda (x) (lambda (y) (x y)))
+                      (lambda (y) (lambda (x) (y x)))) 
+                 #t)
+   
+   (check-equal? (alpha-equivalent? 
+                      (lambda (y) (lambda (x) (x y)))
+                      (lambda (y) (lambda (x) (y x)))) 
+                 #f)
 
-  (check-equal? (aeq big-language 
-                     (lambda (y) (lambda (a) a))
-                     (lambda (y) (lambda (b) b))) 
-                #t)
-  
-  (check-equal? (aeq big-language
-                     (x (lambda (x) x))
-                     (y (lambda (y) y)))
-                #f)
-  
-  (check-equal? (aeq big-language
-                     (a (lambda (x) x))
-                     (a (lambda (y) y)))
-                #t)
-  
-  (check-equal? (aeq big-language
-                     (va-vb-lambda (a b c) a b c d)
-                     (va-vb-lambda (x y z) x y z d))
-                #t)
-  
-  (check-equal? (aeq big-language
-                     (va-vb-lambda (a b c) a b c d)
-                     (va-vb-lambda (x y z) x y c d))
-                #f)
+   (check-equal? (alpha-equivalent? 
+                      (lambda (y) (lambda (a) a))
+                      (lambda (y) (lambda (b) b))) 
+                 #t)
+   
+   (check-equal? (alpha-equivalent?
+                      (x (lambda (x) x))
+                      (y (lambda (y) y)))
+                 #f)
+   
+   (check-equal? (alpha-equivalent?
+                      (a (lambda (x) x))
+                      (a (lambda (y) y)))
+                 #t)
+   
+   (check-equal? (alpha-equivalent?
+                      (va-vb-lambda (a b c) a b c d)
+                      (va-vb-lambda (x y z) x y z d))
+                 #t)
+   
+   (check-equal? (alpha-equivalent?
+                      (va-vb-lambda (a b c) a b c d)
+                      (va-vb-lambda (x y z) x y c d))
+                 #f)
 
-  (check-equal? (aeq big-language a (a)) #f)
+   (check-equal? (alpha-equivalent? a (a)) #f)
 
-  (check-equal? (aeq big-language (b) (a)) #f)
+   (check-equal? (alpha-equivalent? (b) (a)) #f)
 
-  (check-equal? (aeq big-language (((a) a) a) (((b) a) a)) #f)
-  
-  (check-equal? (aeq big-language (((a) a) a) (((a) a) a)) #t)
+   (check-equal? (alpha-equivalent? (((a) a) a) (((b) a) a)) #f)
+   
+   (check-equal? (alpha-equivalent? (((a) a) a) (((a) a) a)) #t)
 
-  (check-equal? (aeq big-language
-                     (let* (cl a x (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c)))
-                     (let* (cl aa x (cl bb (aa 5) (cl cc (bb (aa 6)) no-cl))) (aa (bb cc))))
-                #t)
+   (check-equal? (alpha-equivalent?
+                      (let* (cl a x (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c)))
+                      (let* (cl aa x (cl bb (aa 5) (cl cc (bb (aa 6)) no-cl))) (aa (bb cc))))
+                 #t)
 
-  (check-equal? (aeq big-language
-                     (let* (cl a x (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c)))
-                     (let* (cl aa x (cl bb (aa 5) (cl cc (bb (a 6)) no-cl))) (aa (bb cc))))
-                #f)
+   (check-equal? (alpha-equivalent?
+                      (let* (cl a x (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c)))
+                      (let* (cl aa x (cl bb (aa 5) (cl cc (bb (a 6)) no-cl))) (aa (bb cc))))
+                 #f)
 
-  (check-equal? (aeq big-language
-                     (let* (cl a x (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c)))
-                     (let* (cl aa x (cl bb (aa 5) (cl cc (bb (aa 6)) no-cl))) (aa (bb c))))
-                #f)
+   (check-equal? (alpha-equivalent?
+                      (let* (cl a x (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c)))
+                      (let* (cl aa x (cl bb (aa 5) (cl cc (bb (aa 6)) no-cl))) (aa (bb c))))
+                 #f)
 
-  (check-equal? (aeq big-language
-                     ((lambda (x) x) 8)
-                     ((lambda (y) y) 8))
-                #t)
+   (check-equal? (alpha-equivalent?
+                      ((lambda (x) x) 8)
+                      ((lambda (y) y) 8))
+                 #t)
 
-  (check-equal? (aeq big-language
-                     ((lambda (x) (lambda (y) (x y))) 8)
-                     ((lambda (y) (lambda (x) (x y))) 8))
-                #f)
+   (check-equal? (alpha-equivalent?
+                      ((lambda (x) (lambda (y) (x y))) 8)
+                      ((lambda (y) (lambda (x) (x y))) 8))
+                 #f)
 
-  ;; tests for https://github.com/paulstansifer/redex/issues/10
+   ;; tests for https://github.com/paulstansifer/redex/issues/10
 
-  (check-equal? (aeq big-language
-                     (1 2 3 (cl f (lambda (x) x) no-cl))
-                     (1 2 3 (cl f (lambda (y) y) no-cl)))
-                #t)
+   (check-equal? (alpha-equivalent?
+                      (1 2 3 (cl f (lambda (x) x) no-cl))
+                      (1 2 3 (cl f (lambda (y) y) no-cl)))
+                 #t)
 
-  (check-equal? (aeq big-language
-                     (1 2 3 (cl f (lambda (x) x) no-cl))
-                     (1 2 3 (cl g (lambda (x) x) no-cl)))
-                #f)
+   (check-equal? (alpha-equivalent?
+                      (1 2 3 (cl f (lambda (x) x) no-cl))
+                      (1 2 3 (cl g (lambda (x) x) no-cl)))
+                 #f)
 
-  (check-equal? (aeq big-language
-                     (pile-o-binders a b c)
-                     (pile-o-binders x y z))
-                #f)
+   (check-equal? (alpha-equivalent?
+                      (pile-o-binders a b c)
+                      (pile-o-binders x y z))
+                 #f)
 
-  (check-equal? (aeq big-language
-                     ((pile-o-binders a b c))
-                     ((pile-o-binders x y z)))
-                #f)
-
+   (check-equal? (alpha-equivalent?
+                      ((pile-o-binders a b c))
+                      ((pile-o-binders x y z)))
+                 #f)
+   )
   (destr-test
    (1 2 3 (cl f (lambda (x) x) no-cl))
    (1 2 3 (cl f (lambda (,xx) ,xx) ,no-cl))
