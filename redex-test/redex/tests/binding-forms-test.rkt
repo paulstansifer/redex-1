@@ -223,6 +223,11 @@
   ;; should get rid of that problem
   
   (destr-test
+   (lambda (x) (let* (cl x 5 no-cl) x))
+   (lambda (,x-outer) (let* (cl ,x-inner 5 ,no-cl) ,x-inner))
+   (x-outer x-inner 'x))
+
+  (destr-test
    (let* (cl a 4 (cl b (a 5) (cl c (b (a 6)) no-cl))) (a (b c)))
    (let* (cl ,aa 4 (cl ,bb (,aa 5) (cl ,cc (,bb (,aa 6)) ,no-cl))) (,aa (,bb ,cc)))
    ('a aa 'b bb 'c cc))

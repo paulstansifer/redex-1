@@ -226,7 +226,7 @@
   (let loop [(red-match red-match) (body (bspec-body bs)) (σ σ)]
     (match body
       [(import/internal sub-body beta)
-       (define newly-bound-names (interp-beta-as-set beta red-match))
+       (define newly-bound-names (append* (map exported-binders (interp-beta-as-set beta red-match))))
        (loop red-match sub-body
              (filter (match-lambda [`(,name ,_) (not (member name newly-bound-names))]) σ))]
       [`(,(.../internal sub-body driving-names)
@@ -398,9 +398,14 @@
 ;; If noop? is true, don't freshen; return the input 
 (define (rec-freshen redex-val n? t-l? a-b?)
   ;; assume-binder? is only relevant for atoms, which never have specs
-  (dispatch redex-val (λ (rv b) (rec-freshen-spec rv b n? t-l?)) 
+  (dispatch redex-val (λ (rv bs) (rec-freshen-spec rv bs n? t-l?)) 
             (λ (rv) (rec-freshen-nospec rv n? t-l? a-b?)))) 
 
+;; exported-binders : redex-value -> (list symbol)
+(define (exported-binders redex-val)
+  (map cadr (second ;; top-level? needs to be off, since lone binders matter!
+             (dispatch redex-val (λ (rv bs) (rec-freshen-spec rv bs #t #f))
+                       (λ (rv) (rec-freshen-nospec rv #t #f #t))))))
 
 (module+ test
   (define (all-distinct? . lst)
