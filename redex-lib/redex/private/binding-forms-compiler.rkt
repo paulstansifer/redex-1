@@ -160,6 +160,8 @@
    )
 
 
+
+
  (define (surface-bspec->pat&bspec surface-bspec)
    (define-values (s-body export-beta)
      (syntax-case surface-bspec ()
@@ -172,45 +174,50 @@
        (define (rse str)
          (raise-syntax-error 'compile-binding-forms str s-body))
        
+
        (syntax-case s-body (...)
          [() (values bspec pat)]
          [(#:refers-to . rest-of-body) (rse "#:refers-to requires an expression to its left")]
          [((... ...) . rest-of-body) (rse "... requires an expression to its left")]
          [(sbspec-sub #:refers-to) (rse "#:refers-to requires an argument")]
-         
-         [(sbspec-sub #:refers-to imports-beta (... ...) . rest-of-body)
+         [(sbspec-sub . rest)
+          ;; after getting that hard-to-parse syntax out of the way, do this:
           (begin
-            (define-values (bspec-sub pat-sub) (loop #'sbspec-sub '() #'()))
-            (loop #`rest-of-body 
-                  `(,@bspec ,(.../internal
-                              (import/internal bspec-sub
-                                               (surface-beta->beta #'imports-beta))
-                              (map first (names-transcribed-in-body bspec-sub)))) ;; n-t-i-b ignores the beta, anyways
-                  #`(#,@pat #,pat-sub (... ...))))]
+            (define (process-under rest-of-body imports-beta dotdotdoting)
+              (define (maybe-ddd sub dotdotdoting)
+                (if dotdotdoting
+                    (.../internal
+                     sub
+                     (map first (names-transcribed-in-body sub))) ;; n-t-i-b ignores the beta, anyways
+                    sub))
 
-         [(sbspec-sub #:refers-to imports-beta . rest-of-body)
-          (begin
-            (define-values (bspec-sub pat-sub) (loop #'sbspec-sub '() #'()))
-            (loop #`rest-of-body 
-                  `(,@bspec ,(import/internal bspec-sub
-                                              (surface-beta->beta #'imports-beta)))
-                  #`(#,@pat #,pat-sub)))]
+              (define (maybe-import sub imports-beta)
+                (if imports-beta
+                    (import/internal 
+                     sub
+                     (surface-beta->beta imports-beta))
+                    sub))
 
-         [(sbspec-sub (... ...) . rest-of-body)
-          (begin 
-            (define-values (bspec-sub pat-sub) (loop #'sbspec-sub '() #'()))
-            (loop #`rest-of-body
-                  `(,@bspec ,(.../internal
-                              bspec-sub 
-                              (map first (names-transcribed-in-body bspec-sub))))
-                  #`(#,@pat #,pat-sub (... ...))))]
+              (begin
+                (define-values (bspec-sub pat-sub) (loop #'sbspec-sub '() #'()))
+                (loop rest-of-body
+                      `(,@bspec 
+                        ,(maybe-ddd (maybe-import bspec-sub imports-beta) dotdotdoting))
+                      #`(#,@pat #,pat-sub #,@(if dotdotdoting #`((... ...)) #`())))))
 
-         [(sbspec-sub . rest-of-body) ;; no imports or ...s
-          (begin 
-            (define-values (bspec-sub pat-sub) (loop #'sbspec-sub '() #'()))
-            (loop #'rest-of-body
-                  `(,@bspec ,bspec-sub)
-                  #`(#,@pat #,pat-sub)))]
+
+            (syntax-case #'rest (...) ;; is it followed by a postfix/infix operator?
+              [(#:refers-to imports-beta (... ...) . rest-of-body)
+               (process-under #'rest-of-body #'imports-beta #t)]
+              [(#:refers-to imports-beta #:bind (name tail-imports tail-exports) . rest-of-body)
+               (process-under #'rest-of-body #'imports-beta 
+                              )]
+              [(#:refers-to imports-beta . rest-of-body)
+               (process-under #'rest-of-body #'imports-beta #f)]
+              [((... ...) . rest-of-body)
+               (process-under #'rest-of-body #f #t)]
+              [rest-of-body ;; no imports or ...s
+               (process-under #'rest-of-body #f #f)]))]
 
          [atomic-pattern (values (syntax-e #'atomic-pattern) #'atomic-pattern)])))
    
