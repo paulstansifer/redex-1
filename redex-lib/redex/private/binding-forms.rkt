@@ -72,6 +72,7 @@
     
      (equal? canonical-lhs canonical-rhs))]))
 
+;; Perform a capture-avoiding substitution
 (define (safe-subst language-bf-table match-pattern redex-val redex-val-old-var redex-val-new-val)
   (parameterize
    ([bf-table language-bf-table]
@@ -87,6 +88,8 @@
 
 
 ;; == pattern-dispatch ==
+;; Dispatch to `redex-val`'s appropriate binding spec, if there is one. Otherwise, fall
+;; back to the other function.
 ;; dispatch : redex-val (bindings bspec -> X) (redex-val -> X) -> X 
 (define (dispatch redex-val fn nospec-fn)
   (if (list? redex-val)
@@ -101,7 +104,7 @@
       (nospec-fn redex-val)))
 
 ;; == Redex match stuff ==
-
+;; Lookup into Redex matches, with fallback
 (define-syntax-rule (rm-lookup-or name red-match otherwise)
   (let loop ([red-match red-match])
     (cond
@@ -109,6 +112,7 @@
      [(symbol=? (bind-name (first red-match)) name) (bind-exp (first red-match))]
      [else (loop (rest red-match))])))
 
+;; ... with error
 (define (rm-lookup name red-match)
   (rm-lookup-or name red-match 
                 (redex-error #f "name `~s` not found in redex match: ~s" name red-match)))
@@ -117,7 +121,8 @@
   `(,(rm-lookup name red-match)))
 
 ;; == ... stuff ==
-
+;; push-down-symbols : (listof bind) -> (listof (listof bind))
+;; undo a layer of `...` in a list of binds
 (define (push-down-symbols binds)
   (map (λ (b) 
           (map (λ (exp) (make-bind (bind-name b) exp))
@@ -132,6 +137,10 @@
                   (,(mb 'y 4) ,(mb 'y 5) ,(mb 'y 6)))))
 
 ;; pass-... : match (listof symbol) (∪ #f natural-number) -> (listof match)
+;; Turns a match into a list of matches, each corresponding to one step of 
+;; transcribing a `...`. `driving-names` indicates which names are inside the
+;; `...` and therefore need to be walked through.
+
 ;; If no driving names are applicable, `repeat-count` should be a number
 (define (pass-... red-match driving-names [repeat-count #f])
   ;; here "bind" has the *Redex* meaning of a pair of a name and the value
@@ -159,6 +168,7 @@
 ;; == Beta stuff ==
 
 ;; interp-beta : beta match (X X -> X) (symbol match -> X) X -> X 
+;; Fold over the matched values referred to by `beta`.
 (define (interp-beta beta red-match combine nt-case empty-case)
   ;; doesn't allow `red-match` to change
   (define (interp-beta* beta)
@@ -207,7 +217,7 @@
 
 ;; == Reference renaming ==
  
-
+;; apply-subst : symbol subst -> symbol
 (define (apply-subst name σ)
   (match (assoc name σ)
          [`(,_ ,new-name) new-name]
@@ -291,7 +301,7 @@
            (a (bb (c (dd (ee (ff g))))))
            (a (bb (c (dd (ee (ff g))))))))))
 
-
+;; Freshen a value that has no specification (and thus, at this level, no binding behavior).
 (define (rec-freshen-nospec redex-val noop? top-level? assume-binder?)
   (if (and top-level? (not (all-the-way-down?)))
       `(,redex-val ())

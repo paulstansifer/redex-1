@@ -58,6 +58,7 @@
           [(.../internal beta names) (names-mentioned-in-beta/rec beta)]
           [name `(,name)]))
 
+ ;; names-mentioned-in-beta : beta -> (listof symbol)
  (define (names-mentioned-in-beta beta)
    (remove-duplicates (names-mentioned-in-beta/rec beta)))
 
@@ -161,7 +162,7 @@
 
 
 
-
+ ;; surface-beta->beta : syntax -> syntax<Redex pattern> bspec 
  (define (surface-bspec->pat&bspec surface-bspec)
    (define-values (s-body export-beta)
      (syntax-case surface-bspec ()

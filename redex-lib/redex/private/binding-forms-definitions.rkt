@@ -16,6 +16,11 @@
 ;; body: a tree, with `import/internal`s, `.../internal`s, and identifiers,
 ;;       representing the binding strucutre
 ;; export-beta: a beta indicating what `nt`s get exported
+;; imported-nts: a list of nonterminals that are imported somewhere within this value
+;; exported-nts: a list of nonterminals that appear in `export-beta`
+;; ported-nts: a (duplicate-free) list of nonterminals on the previous two lists
+;; transcription-depths: a list of pairs of names appearing in `body` and numbers indicating 
+;;       how many `...`s they are under
 (struct bspec
         (body export-beta imported-nts exported-nts ported-nts transcription-depths)
         #:prefab)
