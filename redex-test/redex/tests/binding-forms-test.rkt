@@ -52,6 +52,8 @@
          (let3* ((x_a expr_a) (x_b expr_b) (x_c expr_c)) expr_body)
          (siamese-lambda ((x ...) expr) ...)
          (pile-o-binders x ...)
+         (boring-...-bind (x x ... x))
+         (natural-let* ((x expr) ...) expr)
          x
          number
          (+ expr ...))
@@ -71,7 +73,18 @@
           expr_body #:refers-to (shadow x_c x_b x_a))
    (siamese-lambda ((x ...) expr #:refers-to (rib x ...)) ...)
    (embedded-lambda (x) (((x) expr) expr) )
-   (pile-o-binders x ...) #:exports (rib x ...))
+   (pile-o-binders x ...) #:exports (rib x ...)
+   (boring-...-bind (x_1 x_2 #:...bind (whatever nothing nothing) x_3))
+   (natural-let* ((x expr) #:...bind (clauses x (shadow clauses x))) expr_body #:refers-to clauses)
+
+   ;; TODO: either fix this, or make it error reasonably
+   #;
+   (wacky-...-bind x_out ((x_in x_side x_exp expr  #:refers-to x_out ) 
+                          #:...bind (clauses x_side (rib x_exp clauses)))
+                   expr_body #:refers-to (rib x_in ...))
+   )
+
+  
 
   ;; a no-op, except that it triggers freshening
   (define-metafunction big-language
@@ -212,6 +225,17 @@
                       ((pile-o-binders a b c))
                       ((pile-o-binders x y z)))
                  #f)
+
+   (check-equal? (aeq
+                  ((natural-let* ((a (+ a b c)) (b (+ a b c)) (c (+ a b c))) (+ a b c)))
+                  ((natural-let* ((aa (+ a b c)) (bb (+ aa b c)) (cc (+ aa bb c))) (+ aa bb cc))))
+                 #t)
+
+   (check-equal? (aeq
+                  ((natural-let* ((a (+ a b c)) (b (+ a b c)) (c (+ a b c))) (+ a b c)))
+                  ((natural-let* ((aa (+ a b c)) (bb (+ aa b c)) (cc (+ aa bb cc))) (+ aa bb cc))))
+                 #f)
+   
    )
   (destr-test
    (1 2 3 (cl f (lambda (x) x) no-cl))
@@ -263,8 +287,48 @@
    (va-vb-lambda (a b c) (+ c b a) a b c)
    (va-vb-lambda (,a1 ,b1 ,c1) (+ ,c1 ,b1 ,a1) ,a1 ,b1 ,c1)
    (a1 b1 c1 'a 'b 'c))
-
   
+  ;; #:...bind tests
+
+  (destr-test
+   (boring-...-bind (a b c d e f))
+   (boring-...-bind (a b c d e f))
+   ())
+
+  (destr-test
+   (natural-let* ((a (+ a b c d))
+                  (b (+ a b c d))
+                  (c (+ a b c d))
+                  (d (+ a b c d)))
+      (+ a b c d))
+   (natural-let* ((,a (+ a b c d))
+                  (,b (+ ,a b c d))
+                  (,c (+ ,a ,b c d))
+                  (,d (+ ,a ,b ,c d)))
+      (+ ,a ,b ,c ,d))
+   (a b c d 'a 'b 'c 'd)
+   )
+
+  (destr-test 
+   (natural-let* ((a 
+                   (natural-let* ((a (+ a b c))
+                                  (b (+ a b c)))
+                     (+ a b)))
+                  (b (+ a b c))
+                  (c (+ a b c)))
+     (natural-let* ((a a)
+                    (b (+ a b)))
+       (+ a b c)))
+   (natural-let* ((,a 
+                   (natural-let* ((,aa (+ a b c))
+                                  (,bb (+ ,aa b c)))
+                     (+ ,aa ,bb)))
+                  (,b (+ ,a b c))
+                  (,c (+ ,a ,b c)))
+     (natural-let* ((,aaa ,a)
+                    (,bbb (+ ,aaa ,b)))
+       (+ ,aaa ,bbb ,c)))
+   (a b c aa bb aaa bbb 'a 'b 'c))
     
 )
   

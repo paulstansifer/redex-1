@@ -10,6 +10,10 @@
 (struct import/internal (body beta) #:prefab)
 (struct .../internal (body drivers) #:prefab) 
 
+;; from the point of view of transcription, this is really just an nt reference to a value that's
+;; stored weird and needs to be spliced
+(struct ...bind/internal (export-name drivers bspec) #:prefab)
+
 (struct shadow/internal (betas) #:prefab)
 (struct rib/internal (betas) #:prefab)
 
@@ -26,3 +30,8 @@
         #:prefab)
 
 
+
+;; An internal value that has already been matched and has a spec attached to it, 
+;; so no matching is required.
+;; (Used by `#:...bind` for the layers of binding objects it creates).
+(struct value-with-spec (match spec) #:transparent)

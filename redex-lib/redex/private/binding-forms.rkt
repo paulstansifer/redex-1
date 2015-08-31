@@ -19,6 +19,8 @@
 ;; Sometimes we want fresh names, sometimes we want canonical names
 (define name-generator (make-parameter "name generator not defined"))
 
+;; Because we duplicate binders to implement #:...bind, we dedupe them here
+(define anti-duplication-table (make-parameter "anti-duplication table not defined"))
 ;; For α-equivalence testing, we walk the whole term at once.
 (define all-the-way-down? (make-parameter "all-the-way-downness not defined"))
 
@@ -33,6 +35,7 @@
   (parameterize ([bf-table language-bf-table]
                  [pattern-matcher match-pattern]
                  [name-generator gensym]
+                 [anti-duplication-table (make-hasheqv)]
                  [all-the-way-down? #f])
                 (first (rec-freshen redex-val #f #t #f))))
 
@@ -52,6 +55,7 @@
     (parameterize 
      ([bf-table language-bf-table]
       [pattern-matcher match-pattern]
+      [anti-duplication-table (make-hasheqv)]
       [all-the-way-down? #t])
 
      (define canonical-lhs 
@@ -87,6 +91,7 @@
    ([bf-table language-bf-table]
     [pattern-matcher match-pattern]
     [name-generator gensym]
+    [anti-duplication-table (make-hasheqv)]
     [all-the-way-down? #t])
 
    (let loop [(v (first (rec-freshen redex-val #f #t #f)))]
@@ -108,16 +113,57 @@
 ;; back to the other function.
 ;; dispatch : redex-val (red-match bspec -> X) (redex-val -> X) -> X 
 (define (dispatch redex-val fn nospec-fn)
-  (if (list? redex-val)
-      (let loop ((bf-table (bf-table)))
-        (match bf-table
-               [`((,compiled-pat ,bspec) . ,rest)
-                (define match-res ((pattern-matcher) compiled-pat redex-val))
-                (match match-res
-                  [#f (loop rest)]
-                  [`(,m) (fn (bindings-table (mtch-bindings m)) bspec)])]
-               [`() (nospec-fn redex-val)]))
-      (nospec-fn redex-val)))
+  (match redex-val 
+    [(? list?)
+     (let loop ((bf-table (bf-table)))
+       (match bf-table
+              [`((,compiled-pat ,bspec) . ,rest)
+               (define match-res ((pattern-matcher) compiled-pat redex-val))
+               (match match-res
+                 [#f (loop rest)]
+                 ;; "bindings" is what the rest of Redex calls what we call "red-match"
+                 [`(,m) (fn (splay-all-...binds (bindings-table (mtch-bindings m)) bspec)
+                            bspec)])]
+              [`() (nospec-fn redex-val)]))]
+    ;; `value-with-spec` is an internal-only "pre-matched" form
+    [(value-with-spec match spec) (fn match spec)] ;; (we know it's been splayed)
+    [_ (nospec-fn redex-val)]))
+
+;; (As an optimization, we might want to, at compile time, precompute a map from
+;;  export-names to the driving names, so we don't have to traverse the bspec an 
+;;  additional time)
+
+
+
+
+;; `splay-all-...binds` restructures a `redex-match` so that each repeat of the `#:...bind`
+;; is a separate binding object.
+;; splay-all-...binds : red-match bspec -> red-match
+(define (splay-all-...binds red-match bspec)
+  (let loop ([body (bspec-body bspec)] [red-match red-match])
+    (match body
+      [(import/internal sb _) (loop sb red-match)]
+      [(.../internal sb _) (loop sb red-match)]
+      [(...bind/internal name drivers bspec)
+       (splay-...bind red-match drivers name bspec)]
+      [`(,head . ,tail) (loop head (loop tail red-match))]
+      [atom red-match])))
+
+
+;; unsplay : redex-val -> redex-val
+(define (unsplay redex-val)
+  (define (unsplay-rec v)
+    (match v
+           [`() `()]
+           ;; (This matches up with the `...bind/internal` case in `surface-bspec->pat&bspec`)
+           [`(,first-part ,second-part)
+            `(,first-part . ,(unsplay-rec second-part))]))
+
+  (match redex-val
+    [(value-with-spec red-match bs)
+     (unsplay-rec (red-match->redex-val red-match bs))]
+    [normal-value (unsplay-rec normal-value)]))
+
 
 ;; == Redex match stuff ==
 ;; Lookup into Redex matches, with fallback
@@ -178,7 +224,60 @@
      (,(mb 'x 2) ,(mb 'y 2) ,(mb 'z `(1 2 3)))
      (,(mb 'x 3) ,(mb 'y 3) ,(mb 'z `(1 2 3))))))
 
+;; Turn a `...bind` matched as a list into a chain of independent Redex matches
+;; This should be used right after creating `red-match` on each `...bind` in the pattern
+(define (splay-...bind red-match driving-names name-of-tail bspec-of-tail)
+  (define passed-matches (pass-... red-match driving-names #f))
+  
+  (define (make-tail-match p-m)
+    (if (empty? p-m)
+        `()
+        (value-with-spec `(,(make-bind name-of-tail 
+                                       (make-tail-match (cdr p-m)))
+                           . ,(car p-m))
+                         bspec-of-tail)))
 
+  ;; make it referrable-to in the Redex match
+  `(,(make-bind name-of-tail (make-tail-match passed-matches)) 
+    . ,red-match))
+
+(module+ test
+
+  ;; Example:
+  ;; (let* ((a 1)
+  ;;        (b (+ 1 a))
+  ;;        (c (+ 1 a b)))
+  ;;   (+ a b c))
+  (check-equal?
+   (splay-...bind `(,(mb 'xv `(a b c)) ,(mb 'ev `(1 (+ 1 a) (+ 1 a b))) ,(mb 'ebody `(+ a b c)))
+                     `(xv ev)
+                     `clauses
+                     `clauses-bspec)
+   `(,(mb 'clauses 
+          (value-with-spec 
+           `(,(mb 'clauses 
+                  (value-with-spec
+                   `(,(mb 'clauses 
+                          (value-with-spec
+                           `(,(mb 'clauses `())
+                             ,(mb 'xv `c)
+                             ,(mb 'ev `(+ 1 a b))
+                             ,(mb 'ebody `(+ a b c)))
+                           `clauses-bspec))
+                     ,(mb 'xv `b)
+                     ,(mb 'ev `(+ 1 a))
+                     ,(mb 'ebody `(+ a b c)))
+                   `clauses-bspec))
+             ,(mb 'xv `a)
+             ,(mb 'ev `1)
+             ,(mb 'ebody `(+ a b c)))
+           `clauses-bspec))
+     ,(mb 'xv `(a b c))
+     ,(mb 'ev `(1 (+ 1 a) (+ 1 a b)))
+     ,(mb 'ebody `(+ a b c))))
+
+  
+  )
 
 ;; == Beta stuff ==
 
@@ -247,6 +346,8 @@
 ;; rename-references-spec : match bspec substitution -> sexp
 ;; `red-match` should be the output of matching the bspec's Redex pattern against
 ;; the input value
+;; When `#:...bind` planted some `value-with-spec`s in `red-match`, this removes them,
+;; since `rename-references'
 (define (rename-references-spec red-match bs σ)
   (let loop [(red-match red-match) (body (bspec-body bs)) (σ σ)]
     (match body
@@ -254,12 +355,22 @@
        (define newly-bound-names (append* (map exported-binders (interp-beta-as-set beta red-match))))
        (loop red-match sub-body
              (filter (match-lambda [`(,name ,_) (not (member name newly-bound-names))]) σ))]
-      [`(,(.../internal sub-body driving-names)
-         . ,body-rest)
+
+      [`(,(.../internal sub-body driving-names) . ,body-rest)
+
        `(,@(map 
            (lambda (sub-red-match) (loop sub-red-match sub-body σ))
            (pass-... red-match driving-names))
          . ,(loop red-match body-rest σ))]
+
+      [`(,(...bind/internal ...-name _ _) . ,body-rest)
+
+       (match-define (value-with-spec val ...-bspec) (rm-lookup ...-name red-match))
+
+       ;; (rename-references val σ) would also work
+       `(,@(unsplay (rename-references-spec val ...-bspec σ))
+         . ,(loop red-match body-rest σ))]
+
       [`(,body-first . ,body-rest)
        `(,(loop red-match body-first σ) . ,(loop red-match body-rest σ))]
       [`() `()]
@@ -268,6 +379,11 @@
        (if (and (symbol? leaf-value) (member name (bspec-ported-nts bs)))
            leaf-value ;; this atom is a binder, not a reference
            (rename-references leaf-value σ))])))
+
+
+;; Utility function to undo matching
+(define (red-match->redex-val red-match bs)
+  (rename-references-spec red-match bs `()))
 
 (define (rename-references redex-val σ)
   (dispatch redex-val (λ (rv b) (rename-references-spec rv b σ))
@@ -314,7 +430,10 @@
       `((a aa) (b bb) (c cc) (d dd) (e ee) (f ff)))
      `(ieie a b c
            (a (bb (c (dd (ee (ff g))))))
-           (a (bb (c (dd (ee (ff g))))))))))
+           (a (bb (c (dd (ee (ff g)))))))))
+
+  
+  )
 
 ;; Freshen a value that has no specification (and thus, at this level, no binding behavior).
 (define (rec-freshen-nospec redex-val noop? top-level? assume-binder?)
@@ -328,12 +447,13 @@
                (map (λ (elt) (car (rec-freshen elt #f #t #f))) redex-val)
                redex-val) ())]
        [(and (symbol? redex-val) assume-binder?)
-        (define fresh-val
-          (if noop?
-              redex-val
-              ((name-generator) redex-val)))
-        `(,fresh-val ((,redex-val ,fresh-val)))]
+        (if (or noop? (and top-level? (all-the-way-down?))) 
+            `(,redex-val ((,redex-val ,redex-val)))
+            (redex-error 
+             #f 
+             (format "Internal error in freshening: a binder (~s) escaped being freshened." redex-val)))]
        [else `(,redex-val ())])))
+
 
 ;; freshen-subterms : ... -> (listof bind)
 ;; The expressions in the binds are the return values of `rec-freshen`
@@ -344,7 +464,7 @@
    (λ (b)
      (define nt-name (bind-name b))
 
-     (define ...-depth (second (assoc nt-name (bspec-transcription-depths bs))))
+     (define trscr-depth (assoc nt-name (bspec-transcription-depths bs)))
      (define sub-exported? (member nt-name (bspec-exported-nts bs)))
      (define sub-ported? (not (not (member nt-name (bspec-ported-nts bs)))))
 
@@ -361,15 +481,34 @@
                            (if sub-exported?
                                noop?
                                (not (all-the-way-down?)))))
-
      
-     (and (or sub-ported? (all-the-way-down?))
+     (and trscr-depth ;; is it transcribed at all?
+          (or sub-ported? (all-the-way-down?))
           (make-bind
            nt-name
-           (let handle-... ([depth ...-depth] [exp (bind-exp b)])
-             (if (= depth 0)
-                 (rec-freshen exp sub-noop? #f sub-ported?)
-                 (map (λ (sub-exp) (handle-... (- depth 1) sub-exp)) exp))))))
+           ;; TODO: is this lookup ever important, except in the case of non-transcribed imports,
+           ;; which we don't currently suport
+
+           ;; Here, look up `b` to see if that particular bind has been freshened already (which can
+           ;; only happen if the redex match has been splayed for #:...bind). If so, we are
+           ;; revisiting the same binder (i.e., they both originated at the same position in the
+           ;; original value), and should assign it the same name. (by "binder", we may mean "group
+           ;; of binders under `...`")
+           (hash-ref! 
+            (anti-duplication-table) b
+            (λ () ;; Not revisiting a binder
+               (let handle-... ([...-depth (second trscr-depth)] [exp (bind-exp b)])
+                 (if (= ...-depth 0)
+                     (if (symbol? exp)
+                         (let ([new-name
+                                ;; Is it a binder, and should we freshen it?
+                                (if (and sub-ported? (not sub-noop?)) 
+                                    ((name-generator) exp) 
+                                    exp)])
+                           `(,new-name ((,exp ,new-name))))
+                         ;; It's something more complex:
+                         (rec-freshen exp sub-noop? #f sub-ported?))
+                 (map (λ (sub-exp) (handle-... (- ...-depth 1) sub-exp)) exp))))))))
    red-match))
 
 
@@ -391,15 +530,25 @@
         [(import/internal sub-body beta)
          (rename-references (loop red-match freshened-subterms sub-body)
                             (interp-beta-as-fs-subst beta freshened-subterms))]
+        
         [`(,(.../internal sub-body driving-names) . ,body-rest)
          (define red-match-under-... (pass-... red-match driving-names))
 
          `(,@(map (λ (sub-red-match sub-freshened-subterms)
                     (loop sub-red-match sub-freshened-subterms sub-body))
-                 red-match-under-... 
-                 (pass-... freshened-subterms driving-names (length red-match-under-...)))
+                  red-match-under-...
+                  (pass-... freshened-subterms driving-names (length red-match-under-...)))
 
            . ,(loop red-match freshened-subterms body-rest))]
+
+        [`(,(...bind/internal ...-name _ _) . ,body-rest)
+         `(,@(unsplay 
+              (first (rm-lookup-or 
+                      ...-name freshened-subterms
+                      `(,(rm-lookup ...-name red-match) ()))))
+
+           . ,(loop red-match freshened-subterms body-rest))]
+        
         [`(,body-first . ,body-rest)
          `(,(loop red-match freshened-subterms body-first)
            . ,(loop red-match freshened-subterms body-rest))]
@@ -426,6 +575,8 @@
   (dispatch redex-val (λ (rv bs) (rec-freshen-spec rv bs n? t-l?)) 
             (λ (rv) (rec-freshen-nospec rv n? t-l? a-b?)))) 
 
+
+
 ;; exported-binders : redex-value -> (list symbol)
 (define (exported-binders redex-val)
   (map cadr (second ;; top-level? needs to be off, since lone binders matter!
@@ -440,6 +591,7 @@
   (parameterize ([bf-table `()]
                  [pattern-matcher #f]
                  [name-generator gensym]
+                 [anti-duplication-table (make-hasheqv)]
                  [all-the-way-down? #f])
 
     (check-equal?
@@ -453,11 +605,6 @@
     (check-equal?
      (rec-freshen-nospec `a #f #t #f)
      `(a ()))
-
-    (check-match
-     (rec-freshen-nospec `a #f #f #t)
-     `(,aa ((a ,aa)))
-     (all-distinct? aa `a))
 
     (check-match
      (rec-freshen-nospec `a #f #f #f)

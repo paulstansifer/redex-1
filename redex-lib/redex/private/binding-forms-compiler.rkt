@@ -36,7 +36,7 @@
           (surface-bspec->pat&bspec #`((bf-name . bf-body) #:exports #,exports)))
 
         (with-syntax ([(syncheck-expr rewritten-pat _ _)
-                       (rewrite-side-conditions/check-errs all-nts form-name #t pat)])
+                       (rewrite-side-conditions/check-errs all-nts (syntax-e form-name) #t pat)])
           #`(cons (begin syncheck-expr `(rewritten-pat , `#,bspec))
                   #,(compile-binding-forms rest-of-bfs all-nts form-name)))
 
@@ -62,11 +62,13 @@
  (define (names-mentioned-in-beta beta)
    (remove-duplicates (names-mentioned-in-beta/rec beta)))
 
+
  (define (names-imported-in/rec body)
    (match body
           [(import/internal sub-body beta) (append (names-imported-in/rec sub-body)
                                                    (names-mentioned-in-beta/rec beta))]
-          [(.../internal sub-body driver-names) (names-imported-in/rec sub-body)]
+          [(.../internal sub-body _) (names-imported-in/rec sub-body)]
+          [(...bind/internal _ _ _) '()] 
           [`(,car-body . ,cdr-body) (append (names-imported-in/rec car-body)
                                             (names-imported-in/rec cdr-body))]
           [anything-else `()]))
@@ -91,8 +93,9 @@
    (match body
           [(import/internal sub-body beta)
            (names-transcribed-in-body/rec sub-body depth)]
-          [(.../internal sub-body driver-names)
+          [(.../internal sub-body _)
            (names-transcribed-in-body/rec sub-body (+ depth 1))]
+          [(...bind/internal export-name _ _) `((,export-name ,depth))]
           [`(,car-body . ,cdr-body)
            (append (names-transcribed-in-body/rec car-body depth)
                    (names-transcribed-in-body/rec cdr-body depth))]
@@ -105,8 +108,6 @@
 
  (module+ test
    (require rackunit)
-
-   
    
    (check-equal? (names-mentioned-in-beta `a) `(a))
    (check-equal? (names-mentioned-in-beta 
@@ -123,7 +124,11 @@
                     (x_22 ,(import/internal `x_33 (rib/internal `(x_1 x_2)))
                           ,(import/internal `(e_2 ,(import/internal `e_3 (rib/internal `(x_9))))
                                             `x_3))))
-                 `(x_2 x_444 x_1 x_9 x_3)))
+                 `(x_2 x_444 x_1 x_9 x_3))
+   (check-equal? (names-imported-in
+                  `(,(import/internal `e_1 `x_1) ,(...bind/internal `tail `(x_2 x_3) `clause_2)))
+                  `(x_1 x_4))
+   )
 
 
 
@@ -181,15 +186,29 @@
          [(#:refers-to . rest-of-body) (rse "#:refers-to requires an expression to its left")]
          [((... ...) . rest-of-body) (rse "... requires an expression to its left")]
          [(sbspec-sub #:refers-to) (rse "#:refers-to requires an argument")]
+         [(sbspec-sub #:...bind) (rse "#:...bind requires an argument")]
          [(sbspec-sub . rest)
-          ;; after getting that hard-to-parse syntax out of the way, do this:
-          (begin
+          (begin ;; after getting the hard-to-parse syntax out of the way, do this:
             (define (process-under rest-of-body imports-beta dotdotdoting)
               (define (maybe-ddd sub dotdotdoting)
                 (if dotdotdoting
-                    (.../internal
-                     sub
-                     (map first (names-transcribed-in-body sub))) ;; n-t-i-b ignores the beta, anyways
+                    (syntax-case dotdotdoting (nothing)
+                      [(nothing nothing) ;; it was a plain `...`
+                       (.../internal
+                        sub
+                        ;; n-t-i-b ignores the beta, anyways
+                        (map first (names-transcribed-in-body sub)))]
+                      
+                      [(export-name imports exports)
+                       ;; make a spec for separate binding object that `...bind` creates
+                       (let-values 
+                           ([(_ sub-bspec) 
+                             (surface-bspec->pat&bspec 
+                              #`((#,sub export-name #:refers-to imports) #:exports exports))])
+                       
+                         (...bind/internal (syntax-e #'export-name)
+                                           (map first (names-transcribed-in-body sub))
+                                           sub-bspec))])
                     sub))
 
               (define (maybe-import sub imports-beta)
@@ -209,14 +228,19 @@
 
             (syntax-case #'rest (...) ;; is it followed by a postfix/infix operator?
               [(#:refers-to imports-beta (... ...) . rest-of-body)
-               (process-under #'rest-of-body #'imports-beta #t)]
-              [(#:refers-to imports-beta #:bind (name tail-imports tail-exports) . rest-of-body)
-               (process-under #'rest-of-body #'imports-beta 
-                              )]
+               (process-under #'rest-of-body #'imports-beta #'(nothing nothing))]
+              [(#:refers-to imports-beta #:...bind (name tail-imports tail-exports) . rest-of-body)
+               (process-under #'rest-of-body #'imports-beta #'(name tail-imports tail-exports))]
+              [(#:refers-to imports-beta #:...bind . anything-else)
+               (rse "#...bind must be followed by `(name tail-imports tail-exports)`")]
               [(#:refers-to imports-beta . rest-of-body)
                (process-under #'rest-of-body #'imports-beta #f)]
               [((... ...) . rest-of-body)
-               (process-under #'rest-of-body #f #t)]
+               (process-under #'rest-of-body #f #'(nothing nothing))]
+              [(#:...bind (name tail-imports tail-exports) . rest-of-body)
+               (process-under #'rest-of-body #f #'(name tail-imports tail-exports))]
+              [(#:...bind . anything-else)
+               (rse "#...bind must be followed by `(name tail-imports tail-exports)`")]
               [rest-of-body ;; no imports or ...s
                (process-under #'rest-of-body #f #f)]))]
 
