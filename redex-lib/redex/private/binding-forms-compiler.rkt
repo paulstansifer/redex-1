@@ -162,7 +162,7 @@
 
 
 
- ;; surface-beta->beta : syntax -> syntax<Redex pattern> bspec 
+ ;; surface-bspec->pat&bspec : syntax -> syntax<Redex pattern> bspec 
  (define (surface-bspec->pat&bspec surface-bspec)
    (define-values (s-body export-beta)
      (syntax-case surface-bspec ()

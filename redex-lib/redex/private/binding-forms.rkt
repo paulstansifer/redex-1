@@ -10,14 +10,23 @@
 (provide freshen α-equal? safe-subst)
 
 
+;; == parameters 
+
+;; The binding forms in the current language
 (define bf-table (make-parameter "binding-forms table not defined"))
+;; Necessary to avoid a circular import
 (define pattern-matcher (make-parameter "pattern matcher not defined"))
+;; Sometimes we want fresh names, sometimes we want canonical names
 (define name-generator (make-parameter "name generator not defined"))
 
 ;; For α-equivalence testing, we walk the whole term at once.
 (define all-the-way-down? (make-parameter "all-the-way-downness not defined"))
 
-;; Where `bindings` is understood in the "matcher.rkt" sense, not in the "binding forms sense":
+;; == implementation of public interface ==
+
+;; The first step is to set up the parameters. Then, each of these functions
+;; uses `rec-freshen` in some way.
+
 ;; freshen : (listof (list compiled-pattern bspec)) 
 ;; (compiled-pattern redex-val -> (union #f mtch)) redex-val -> redex-val
 (define (freshen language-bf-table match-pattern redex-val)
@@ -86,11 +95,18 @@
       [(eq? redex-val-old-var v) redex-val-new-val]
       [else v]))))
 
-
 ;; == pattern-dispatch ==
+
+;; This takes a plain redex-val (and the bf-table parameter) and figures out what
+;; binding form (if any) applies to it. It also tears `redex-val` apart into a redex match,
+;; in the case where a binding form does apply.
+
+;; `dispatch` is used by `freshen-rec`, `rename-references`, and `exported-binders`.
+
+
 ;; Dispatch to `redex-val`'s appropriate binding spec, if there is one. Otherwise, fall
 ;; back to the other function.
-;; dispatch : redex-val (bindings bspec -> X) (redex-val -> X) -> X 
+;; dispatch : redex-val (red-match bspec -> X) (redex-val -> X) -> X 
 (define (dispatch redex-val fn nospec-fn)
   (if (list? redex-val)
       (let loop ((bf-table (bf-table)))
@@ -117,8 +133,7 @@
   (rm-lookup-or name red-match 
                 (redex-error #f "name `~s` not found in redex match: ~s" name red-match)))
 
-(define (rm-lookup-as-list name red-match)
-  `(,(rm-lookup name red-match)))
+(define (rm-lookup-as-list name red-match) `(,(rm-lookup name red-match)))
 
 ;; == ... stuff ==
 ;; push-down-symbols : (listof bind) -> (listof (listof bind))
