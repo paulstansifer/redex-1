@@ -1,6 +1,8 @@
 #lang racket
 (require redex)
 
+(provide (all-defined-out))
+
 ;; This semantics comes from the paper
 ;; _A Natural Semantics for Lazy Evaluation_,
 ;; by John Launchbury, POPL 1993
@@ -121,87 +123,60 @@
    (build-derivations
     (⇓ · ,p Δ v))))
 
-;; strictly speaking, this treats all variables as if they were bound
-(define-metafunction L
-  =α : any any ((variable variable) ...) -> (any ((variable variable) ...))
-  [(=α () () any) (#t any)]
-  [(=α (any_l any_l-rest ...) (any_r any_r-rest ...) any_env) ;; check one, then check the rest
-   ,(redex-let* L ([(any_first-res any_new-env) 
-                    (term (=α any_l any_r any_env))]
-                   [(any_rest-res any_done-env)
-                    (term (=α (any_l-rest ...) (any_r-rest ...) any_new-env))])
-      (term (,(and (term any_first-res) (term any_rest-res)) any_done-env)))]
-  [(=α variable_l variable_r (name env (any_before ... (variable_l variable_r) any_after ...)))
-   (#t env)] ;; in environment already
-  [(=α (name variable_left variable_!_l) (name variable_right variable_!_r) 
-       (name env ((variable_!_l variable_!_r) ...)))
-   (#t ,(cons (term (variable_left variable_right)) ;; add to environment
-              (term env)))]
-  [(=α any any any_env)
-   (#t any_env)]
-  [(=α any any_different any_env)
-   (#f any_env)])
-
-
-(define-syntax-rule (test-α-equal lhs rhs)
-  (if (car (term (=α ,lhs ,rhs ())))
-      (test-equal lhs lhs)   ;; hack: run a fake test
-      (test-equal lhs rhs))) ;; this will fail
-  
-
-
 (module+ test
+
+  (default-language L)
 
   ;; replace-free and rename-bound tests omitted, since those metafunctions are gone
 
-  (test-α-equal (term (subst (λ (x) ((λ (y) x) y)) y z))
+  (test-equal (term (subst (λ (x) ((λ (y) x) y)) y z))
                 (term (λ (x) ((λ (y) x) z))))
-  (test-α-equal (term (subst (λ (x) ((λ (y) y) y)) y z))
+  (test-equal (term (subst (λ (x) ((λ (y) y) y)) y z))
                 (term (λ (x) ((λ (y) y) z))))
-  (test-α-equal (term (subst (λ (x) ((λ (q) y) y)) y z))
+  (test-equal (term (subst (λ (x) ((λ (q) y) y)) y z))
                 (term (λ (x) ((λ (q) z) z))))
-  (test-α-equal (term (subst (λ (y) x) x y))
+  (test-equal (term (subst (λ (y) x) x y))
                 (term (λ (y1) y)))
-  (test-α-equal (term (subst (let ([x 1]) (+ x z)) z q))
+  (test-equal (term (subst (let ([x 1]) (+ x z)) z q))
                 (term (let ([x 1]) (+ x q))))
-  (test-α-equal (term (subst (let ([x 1][y 2][z 3]) (+ x y)) x q))
+  (test-equal (term (subst (let ([x 1][y 2][z 3]) (+ x y)) x q))
                 (term (let ([x 1][y 2][z 3]) (+ x y))))
   
-  (test-α-equal (term (separate · x)) (term ⊥))
-  (test-α-equal (term (separate (· x ↦ 1) x)) (term (· x ↦ 1)))
-  (test-α-equal (term (separate ((· x ↦ 1) y ↦ 2) x)) 
+  (test-equal (term (separate · x)) (term ⊥))
+  (test-equal (term (separate (· x ↦ 1) x)) (term (· x ↦ 1)))
+  (test-equal (term (separate ((· x ↦ 1) y ↦ 2) x)) 
                 (term ((· y ↦ 2) x ↦ 1)))
-  (test-α-equal (term (separate (· x ↦ 1) y)) (term ⊥))
+  (test-equal (term (separate (· x ↦ 1) y)) (term ⊥))
 
   ;; ^ tests omitted, since that metafunction is gone
 
-  (test-α-equal (judgment-holds (⇓ (· y ↦ 1) ((λ (x) x) y) Δ v) v)
+  (test-equal (judgment-holds (⇓ (· y ↦ 1) ((λ (x) x) y) Δ v) v)
                 (list (term 1)))
   
-  (test-α-equal (run (term 1)) 1)
-  (test-α-equal (run (term (let ([y 1]) 
+  (test-equal (run (term 1)) 1)
+  (test-equal (run (term (let ([y 1]) 
                              (let ([z ((λ (x) x) y)])
                                2))))
                 2)
-  (test-α-equal (run (term (let ([y 1]) y))) 1)
-  (test-α-equal (run (term (let ([y (λ (x) x)]) y))) (term (λ (x1) x1)))
-  (test-α-equal (run (term (let ([y 1]) ((λ (x) x) y)))) 1)
-  (test-α-equal (run (term
+  (test-equal (run (term (let ([y 1]) y))) 1)
+  (test-equal (run (term (let ([y (λ (x) x)]) y))) (term (λ (x1) x1)))
+  (test-equal (run (term (let ([y 1]) ((λ (x) x) y)))) 1)
+  (test-equal (run (term
                       (let ([app (λ (f) (λ (x) (f x)))]
                             [f (λ (x) (λ (y) x))]
                             [o 1])
                         (((app f) o) f))))
                 1)
-  (test-α-equal (run (term (if0 0 1 2))) 1)
-  (test-α-equal (run (term (if0 1 2 3))) 3)
+  (test-equal (run (term (if0 0 1 2))) 1)
+  (test-equal (run (term (if0 1 2 3))) 3)
   
   ;; free variable errors return no derivation
-  (test-α-equal (run (term (let ([x y]) x))) #f)
+  (test-equal (run (term (let ([x y]) x))) #f)
   
   ;; as do runtime errors
-  (test-α-equal (run (term (let ([two 2]) (1 two)))) #f)
+  (test-equal (run (term (let ([two 2]) (1 two)))) #f)
   
-  (test-α-equal (run
+  (test-equal (run
                  (term
                   (let ([o 1]
                         [t 2]
@@ -219,7 +194,7 @@
                      f))))
                 10)
   
-  (test-α-equal (run (term
+  (test-equal (run (term
                       (let ([me (λ (x) x)])
                         (let ([tri
                                (λ (x)
@@ -229,7 +204,7 @@
                           (tri five)))))
                 9)
   
-  (test-α-equal (run (term (let ([tri
+  (test-equal (run (term (let ([tri
                                   (λ (x)
                                      (let ([x1 (+ x -1)])
                                        x))]
@@ -237,7 +212,7 @@
                              (tri five))))
                 5)
   
-  (test-α-equal (run (term
+  (test-equal (run (term
                       (let ([Y (λ (f) 
                                   (let ([g (λ (x) 
                                               (let ([xx (x x)])
@@ -255,7 +230,7 @@
                 (+ 5 4 3 2 1 0))
 
 
-  (test-α-equal (run (term (let ([one 1] [two 2])
+  (test-equal (run (term (let ([one 1] [two 2])
                              (((λ (x) (λ (x) (+ x one))) one) two))))
                 3)
   

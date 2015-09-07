@@ -329,6 +329,8 @@
                     (,bbb (+ ,aaa ,b)))
        (+ ,aaa ,bbb ,c)))
    (a b c aa bb aaa bbb 'a 'b 'c))
+
+  ;; TODO: try a form with nested `#:...bind`
     
 )
   
