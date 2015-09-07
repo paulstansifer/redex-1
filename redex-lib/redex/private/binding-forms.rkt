@@ -168,11 +168,11 @@
 ;; == Redex match stuff ==
 ;; Lookup into Redex matches, with fallback
 (define-syntax-rule (rm-lookup-or name red-match otherwise)
-  (let loop ([red-match red-match])
+  (let loop ([rm red-match])
     (cond
-     [(empty? red-match) otherwise]
-     [(symbol=? (bind-name (first red-match)) name) (bind-exp (first red-match))]
-     [else (loop (rest red-match))])))
+     [(empty? rm) otherwise]
+     [(symbol=? (bind-name (first rm)) name) (bind-exp (first rm))]
+     [else (loop (rest rm))])))
 
 ;; ... with error
 (define (rm-lookup name red-match)
