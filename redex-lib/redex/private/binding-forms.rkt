@@ -19,8 +19,6 @@
 ;; Sometimes we want fresh names, sometimes we want canonical names
 (define name-generator (make-parameter "name generator not defined"))
 
-;; Because we duplicate binders to implement #:...bind, we dedupe them here
-(define anti-duplication-table (make-parameter "anti-duplication table not defined"))
 ;; For α-equivalence testing, we walk the whole term at once.
 (define all-the-way-down? (make-parameter "all-the-way-downness not defined"))
 
@@ -35,7 +33,6 @@
   (parameterize ([bf-table language-bf-table]
                  [pattern-matcher match-pattern]
                  [name-generator gensym]
-                 [anti-duplication-table (make-hasheqv)]
                  [all-the-way-down? #f])
                 (first (rec-freshen redex-val #f #t #f))))
 
@@ -55,7 +52,6 @@
     (parameterize 
      ([bf-table language-bf-table]
       [pattern-matcher match-pattern]
-      [anti-duplication-table (make-hasheqv)]
       [all-the-way-down? #t])
 
      (define canonical-lhs 
@@ -91,7 +87,6 @@
    ([bf-table language-bf-table]
     [pattern-matcher match-pattern]
     [name-generator gensym]
-    [anti-duplication-table (make-hasheqv)]
     [all-the-way-down? #t])
 
    (let loop [(v (first (rec-freshen redex-val #f #t #f)))]
@@ -217,18 +212,43 @@
              (cons (λ driven-binds (append driven-binds undriven-binds))
                    pushed-down-driven))))
 
+;; pass-...-restricted : match (listof symbol) -> (listof match) match
+;; Like `pass-...`, but names that aren't driven become unavailble under `...`
+;; and are returned separatedly
+(define (pass-...-restricted red-match driving-names)
+  (define-values (driven-binds undriven-binds)
+    (partition (λ (b) (member (bind-name b) driving-names)) red-match))
+
+  (values (apply map (cons (λ db db) (push-down-symbols driven-binds)))
+          undriven-binds)
+
+  
+  )
+
 (module+ test
   (check-equal? 
    (pass-... `(,(mb 'x `(1 2 3)) ,(mb 'y `(1 2 3)) ,(mb 'z `(1 2 3))) `(x y))
    `((,(mb 'x 1) ,(mb 'y 1) ,(mb 'z `(1 2 3)))
      (,(mb 'x 2) ,(mb 'y 2) ,(mb 'z `(1 2 3)))
-     (,(mb 'x 3) ,(mb 'y 3) ,(mb 'z `(1 2 3))))))
+     (,(mb 'x 3) ,(mb 'y 3) ,(mb 'z `(1 2 3)))))
+
+  (define-values (passed remaining)
+    (pass-...-restricted `(,(mb 'x `(1 2 3)) ,(mb 'y `(1 2 3)) ,(mb 'z `(1 2 3))) `(x y)))
+
+  (check-equal? passed
+                `((,(mb 'x 1) ,(mb 'y 1))
+                  (,(mb 'x 2) ,(mb 'y 2))
+                  (,(mb 'x 3) ,(mb 'y 3))))
+
+  (check-equal? remaining
+                `(,(mb 'z `(1 2 3))))
+  )
 
 ;; Turn a `...bind` matched as a list into a chain of independent Redex matches
 ;; This should be used right after creating `red-match` on each `...bind` in the pattern
 (define (splay-...bind red-match driving-names name-of-tail bspec-of-tail)
-  (define passed-matches (pass-... red-match driving-names #f))
-  
+  (define-values (passed remaining) (pass-...-restricted red-match driving-names))
+
   (define (make-tail-match p-m)
     (if (empty? p-m)
         `()
@@ -238,8 +258,8 @@
                          bspec-of-tail)))
 
   ;; make it referrable-to in the Redex match
-  `(,(make-bind name-of-tail (make-tail-match passed-matches)) 
-    . ,red-match))
+  `(,(make-bind name-of-tail (make-tail-match passed)) 
+    . ,remaining))
 
 (module+ test
 
@@ -261,19 +281,14 @@
                           (value-with-spec
                            `(,(mb 'clauses `())
                              ,(mb 'xv `c)
-                             ,(mb 'ev `(+ 1 a b))
-                             ,(mb 'ebody `(+ a b c)))
+                             ,(mb 'ev `(+ 1 a b)))
                            `clauses-bspec))
                      ,(mb 'xv `b)
-                     ,(mb 'ev `(+ 1 a))
-                     ,(mb 'ebody `(+ a b c)))
+                     ,(mb 'ev `(+ 1 a)))
                    `clauses-bspec))
              ,(mb 'xv `a)
-             ,(mb 'ev `1)
-             ,(mb 'ebody `(+ a b c)))
+             ,(mb 'ev `1))
            `clauses-bspec))
-     ,(mb 'xv `(a b c))
-     ,(mb 'ev `(1 (+ 1 a) (+ 1 a b)))
      ,(mb 'ebody `(+ a b c))))
 
   
@@ -486,29 +501,18 @@
           (or sub-ported? (all-the-way-down?))
           (make-bind
            nt-name
-           ;; TODO: is this lookup ever important, except in the case of non-transcribed imports,
-           ;; which we don't currently suport
-
-           ;; Here, look up `b` to see if that particular bind has been freshened already (which can
-           ;; only happen if the redex match has been splayed for #:...bind). If so, we are
-           ;; revisiting the same binder (i.e., they both originated at the same position in the
-           ;; original value), and should assign it the same name. (by "binder", we may mean "group
-           ;; of binders under `...`")
-           (hash-ref! 
-            (anti-duplication-table) b
-            (λ () ;; Not revisiting a binder
-               (let handle-... ([...-depth (second trscr-depth)] [exp (bind-exp b)])
-                 (if (= ...-depth 0)
-                     (if (symbol? exp)
-                         (let ([new-name
-                                ;; Is it a binder, and should we freshen it?
-                                (if (and sub-ported? (not sub-noop?)) 
-                                    ((name-generator) exp) 
-                                    exp)])
-                           `(,new-name ((,exp ,new-name))))
-                         ;; It's something more complex:
-                         (rec-freshen exp sub-noop? #f sub-ported?))
-                 (map (λ (sub-exp) (handle-... (- ...-depth 1) sub-exp)) exp))))))))
+           (let handle-... ([...-depth (second trscr-depth)] [exp (bind-exp b)])
+             (if (= ...-depth 0)
+                 (if (symbol? exp)
+                     (let ([new-name
+                            ;; Is it a binder, and should we freshen it?
+                            (if (and sub-ported? (not sub-noop?)) 
+                                ((name-generator) exp) 
+                                exp)])
+                       `(,new-name ((,exp ,new-name))))
+                     ;; It's something more complex:
+                     (rec-freshen exp sub-noop? #f sub-ported?))
+                 (map (λ (sub-exp) (handle-... (- ...-depth 1) sub-exp)) exp))))))
    red-match))
 
 
@@ -591,7 +595,6 @@
   (parameterize ([bf-table `()]
                  [pattern-matcher #f]
                  [name-generator gensym]
-                 [anti-duplication-table (make-hasheqv)]
                  [all-the-way-down? #f])
 
     (check-equal?

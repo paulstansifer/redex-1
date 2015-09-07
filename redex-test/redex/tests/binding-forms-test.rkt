@@ -76,7 +76,6 @@
    (pile-o-binders x ...) #:exports (rib x ...)
    (boring-...-bind (x_1 x_2 #:...bind (whatever nothing nothing) x_3))
    (natural-let* ((x expr) #:...bind (clauses x (shadow clauses x))) expr_body #:refers-to clauses)
-
    ;; TODO: either fix this, or make it error reasonably
    #;
    (wacky-...-bind x_out ((x_in x_side x_exp expr  #:refers-to x_out ) 
@@ -102,6 +101,7 @@
     (check-match (substitute big-language (term orig) (term old-var) (term new-val))
                  `expected
                  (all-distinct? distinct-name ...)))
+
 
   (define-syntax-rule (destr-test-lang lang orig pat (distinct-name ...))
     (begin 
