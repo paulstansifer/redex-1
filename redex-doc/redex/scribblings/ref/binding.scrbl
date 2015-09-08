@@ -183,7 +183,7 @@ For example:
                (let* ((x e) ...) e))
             #:binding-forms
             (λ (x) e #:refers-to x)
-            (let* ((x_v e_v) #...bind (clauses x_v (shadow clauses x_v)))
+            (let* ((x_v e_v) #:...bind (clauses x_v (shadow clauses x_v)))
               e_body #:refers-to clauses))]
 
 A @tech{binding repetition} can be declared anywhere @racket[...] is legal by instead writing
