@@ -43,6 +43,10 @@
                      racket/syntax
                      racket/match))
 
+(require "term-repr.rkt")
+
+
+
 (define (language-nts lang)
   (hash-map (compiled-lang-ht lang) (λ (x y) x)))
 
@@ -1733,7 +1737,7 @@
                              (define rhs (car rhss))
                              (define id (car ids))
                              (define (continue) (loop (cdr ids) (cdr lhss) (cdr rhss) (+ num 1)))
-                             (define mtchs (match-pattern pattern exp))
+                             (define mtchs (match-pattern pattern (a-t exp)))
                              (cond
                                [(not mtchs) (continue)]
                                [else
@@ -1763,7 +1767,7 @@
                                                      (in-list codom-compiled-patterns)])
                                              (match-pattern codom-compiled-pattern 
                                                             (if post-condition?
-                                                                (list exp ans)
+                                                                (list->term (list exp ans))
                                                                 ans)))
                                      (redex-error name
                                                   "codomain test failed for ~s, call was ~s"
@@ -1792,7 +1796,7 @@
                                                         (display " ")
                                                         (otr name results level))]
                                                      [print-as-expression #f])
-                                        (trace-call name metafunc exp))
+                                        (trace-call name metafunc (from-term exp)))
                                       (metafunc exp)))])
         traced-metafunc))
      (if dom-compiled-pattern

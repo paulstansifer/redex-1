@@ -148,7 +148,7 @@
                             (in-hole ((hide-hole hole) hole)
                                      hole))
                       number)
-             (in-hole E ,(add1 (term number)))))
+             (in-hole E ,(add1 (from-term (term number))))))
        (term (hole 2)))
       (list (term (hole 3))))
 
@@ -313,12 +313,12 @@
 (let* ([red1
         (reduction-relation 
          empty-language
-         #:domain (side-condition number_1 (even? (term number_1)))
+         #:domain (side-condition number_1 (even? (from-term (term number_1))))
          (--> number number))]
        [red2
         (reduction-relation 
          empty-language
-         #:domain (side-condition number_1 (odd? (term number_1)))
+         #:domain (side-condition number_1 (odd? (from-term (term number_1))))
          (--> number number))]
        [red-c
         (union-reduction-relations red1 red2)])
@@ -1022,8 +1022,8 @@
   
   (let* ([R (reduction-relation
              empty-language
-             (--> number (q ,(add1 (term number)))
-                  (side-condition (odd? (term number)))
+             (--> number (q ,(add1 (from-term (term number))))
+                  (side-condition (odd? (from-term (term number))))
                   side-condition)
              (--> 1 4 plain)
              (==> 2 t

@@ -32,6 +32,9 @@
 (require
  (for-template "term.rkt"))
 
+(require (for-syntax "term-repr.rkt"))
+(require "term-repr.rkt")
+
 (struct derivation (term name subs) 
   #:transparent
   #:guard (λ (term name subs struct-name)
@@ -92,9 +95,11 @@
 (module mode-utils racket/base
   
   (require racket/list)
+  (require "term-repr.rkt")
   
   (provide split-by-mode
-           assemble)
+           assemble
+           assemble-terms)
   
   (define (split-by-mode xs mode)
     (for/fold ([ins '()] [outs '()])
@@ -106,12 +111,20 @@
         [else (error 'split-by-mode "ack ~s" m)])))
   
   (define (assemble mode inputs outputs)
-    (let loop ([ms mode] [is inputs] [os outputs])
+    (let loop ([ms mode] [is (a-non-t inputs)] [os (a-non-t outputs)])
       (if (null? ms)
           '()
           (case (car ms)
             [(I) (cons (car is) (loop (cdr ms) (cdr is) os))]
-            [(O) (cons (car os) (loop (cdr ms) is (cdr os)))])))))
+            [(O) (cons (car os) (loop (cdr ms) is (cdr os)))]))))
+
+  (define (assemble-terms mode inputs outputs)
+    (let loop ([ms mode] [is (a-t inputs)] [os (a-t outputs)])
+      (if (null? ms)
+          (to-term '())
+          (case (car ms)
+            [(I) (term-cons (term-car is) (loop (cdr ms) (term-cdr is) os))]
+            [(O) (term-cons (term-car os) (loop (cdr ms) is (term-cdr os)))])))))
 
 (require 'mode-utils
          (for-syntax 'mode-utils))
@@ -326,12 +339,12 @@
          (result (mtch-bindings mtch)))))
 
 (define (repeated-premise-outputs inputs premise)
-  (if (null? inputs)
+  (if (term-null? inputs)
       '(())
-      (let ([output (premise (car inputs))])
+      (let ([output (premise (term-car inputs))])
         (if (null? output)
             '()
-            (for*/list ([o output] [os (repeated-premise-outputs (cdr inputs) premise)])
+            (for*/list ([o output] [os (repeated-premise-outputs (term-cdr inputs) premise)])
               (cons o os))))))
 
 (define (IO-judgment-form? jf)
@@ -340,8 +353,11 @@
            (equal? (runtime-judgment-form-mode jf) '(O I)))))
 
 (define not-in-cache (gensym))
+
+;; returns a list of derivation-subs-acc
 (define (call-judgment-form form-name form-proc mode input derivation-init
                             pair-of-boxed-caches ct-lang)
+  (a-t input #f)
   (define boxed-cache (if (include-entire-derivation)
                           (car pair-of-boxed-caches)
                           (cdr pair-of-boxed-caches)))
@@ -379,7 +395,7 @@
           (define (wrapped . _)
             (set! outputs (form-proc/cache form-proc/cache input derivation-init))
             (for/list ([output (in-list outputs)])
-              (cons form-name (assemble mode input (derivation-with-output-only-output output)))))
+              (cons form-name (assemble-terms mode input (derivation-with-output-only-output output)))))
           (define otr (current-trace-print-results))
           (define ot (current-trace-print-args))
           (if in-cache?
@@ -395,7 +411,7 @@
                           (if (equal? (object-name otr) 'result-tracer)
                               otr
                               result-tracer)])
-            (apply trace-call form-name wrapped (assemble mode input spacers)))
+            (apply trace-call form-name wrapped (assemble-terms mode input spacers)))
           outputs)
         (form-proc/cache form-proc/cache input derivation-init)))
   (remove-duplicates
@@ -404,7 +420,7 @@
      (define rulename (derivation-with-output-only-name v))
      (define this-output (derivation-with-output-only-output v))
      (derivation-subs-acc
-      (and subs (derivation (cons form-name (assemble mode input this-output))
+      (and subs (derivation (cons form-name (assemble-terms mode input this-output))
                             
                             ;; just drop the subderivations 
                             ;; and the name when we know we
@@ -1102,10 +1118,11 @@
          (redex-error form-name (string-append "judgment input values do not match its contract;\n"
                                                " (unknown output values indicated by _)\n  contract: ~s\n  values: ~s")
                       (cons form-name orig-ctcs)
-                      (cons form-name (assemble modes input-term (build-list (length modes)
-                                                                             (λ (_) '_))))))]
+                      (cons form-name (assemble-terms modes input-term 
+                                                      (to-term (build-list (length modes)
+                                                                           (λ (_) '_)))))))]
       [(O)
-       (define io-term (assemble modes input-term o-term))
+       (define io-term (assemble-terms modes input-term o-term))
        (unless (match-pattern contracts io-term)
          (redex-error form-name "judgment values do not match its contract;\n  contract: ~s\n  values: ~s"
                       (cons form-name orig-ctcs) (cons form-name io-term)))]))
@@ -1587,7 +1604,7 @@
     (define-values (p/-s p/+s) (split-by-mode (syntax->list prem-body) p-mode))
     (define-values (p/-rws mf-apps) (rewrite-terms p/-s ns in-judgment-form?))
     (define-values (syncheck-exps p/+rws new-names) (rewrite-pats p/+s lang))
-    (define p-rw (assemble p-mode p/-rws p/+rws))
+    (define p-rw (assemble p-mode (a-non-t p/-rws) (a-non-t p/+rws)))
     (with-syntax ([(p ...) p-rw])
       (values (cons #`(begin
                         #,@syncheck-exps
@@ -1631,7 +1648,7 @@
 
 (define-for-syntax (rewrite-pats pats lang)
   (with-syntax ([((syncheck-exp pat-rw (names ...)) ...) 
-                 (map (λ (p) (rewrite/pat p lang))
+                 (map (λ (p) (a-non-t (rewrite/pat p lang)))
                       pats)])
     (values #'(syncheck-exp ...)
             (syntax->list #'(pat-rw ...))

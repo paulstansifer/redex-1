@@ -15,6 +15,9 @@
          "lang-struct.rkt"
          "matcher.rkt")
 
+(require "term-repr.rkt")
+(require (for-syntax "term-repr.rkt"))
+
 (provide term term-let define-term
          hole in-hole
          term-let/error-name term-let-fn term-define-fn
@@ -127,14 +130,13 @@
     (let-values ([(rewritten _) (rewrite/max-depth stx 0 #f #f)])
       rewritten))
   
-  (define (rewrite-application fn args depth srcloc-stx)
-    (let-values ([(rewritten max-depth) (rewrite/max-depth args depth #t #t)])
-      (let ([result-id (car (generate-temporaries '(f-results)))])
+  (define (rewrite-application-but-not-args fn args-rewritten depth max-depth srcloc-stx)
+    (let ([result-id (car (generate-temporaries '(f-results)))])
         (with-syntax ([fn fn])
           (let loop ([func (if (judgment-form-id? #'fn)
                                (syntax/loc srcloc-stx (jf-apply fn))
                                (syntax/loc srcloc-stx (mf-apply fn)))]
-                     [args-stx rewritten]
+                     [args-stx args-rewritten]
                      [res result-id]
                      [args-depth (min depth max-depth)])
             (with-syntax ([func func]
@@ -150,7 +152,11 @@
                     (loop (syntax (begin (mf-map func)))
                           (syntax/loc args-stx (args dots))
                           (syntax (res dots))
-                          (sub1 args-depth))))))))))
+                          (sub1 args-depth)))))))))
+
+  (define (rewrite-application fn args depth srcloc-stx)
+    (let-values ([(rewritten max-depth) (rewrite/max-depth args depth #t #t)])
+      (rewrite-application-but-not-args fn rewritten depth max-depth srcloc-stx)))
   
   (define (rewrite/max-depth stx depth ellipsis-allowed? continuing-an-application?)
     (syntax-case stx (unquote unquote-splicing in-hole hole)
@@ -175,9 +181,9 @@
             (judgment-form-id? #'jf-name))
        (begin
          (unless (not (memq 'O (judgment-form-mode (syntax-local-value #'jf-name))))
-           (raise-syntax-error 'term 
-                               "judgment forms with output mode (\"O\") positions disallowed"
-                               arg-stx stx))
+                 (raise-syntax-error 'term 
+                                     "judgment forms with output mode (\"O\") positions disallowed"
+                                     arg-stx stx))
          (rewrite-application #'jf-name (syntax/loc stx (arg ...)) depth stx))]
       [f
        (and (identifier? (syntax f))
@@ -217,13 +223,13 @@
          (with-syntax ([v #`(begin
                               #,(defined-check ref "term" #:external #'x)
                               #,ref)])
-           (values #`(undatum v) 0)))]
+                      (values #`(undatum v) 0)))]
       [(unquote x)
        (values (syntax (undatum x)) 0)]
       [(unquote . x)
        (raise-syntax-error 'term "malformed unquote" arg-stx stx)]
       [(unquote-splicing x)
-       (values (syntax (undatum-splicing x)) 0)]
+       (values (syntax (undatum-splicing (map to-term (from-term x)))) 0)]
       [(unquote-splicing . x)
        (raise-syntax-error 'term "malformed unquote splicing" arg-stx stx)]
       [(in-hole id body)
@@ -231,48 +237,59 @@
       [(in-hole . x)
        (raise-syntax-error 'term "malformed in-hole" arg-stx stx)]
       [hole (values (syntax (undatum the-hole)) 0)]
+      [x (and (identifier? #'x)
+              (eq? (syntax->datum #'x) '...))
+         (values stx 0)]
       [x
        (and (identifier? (syntax x))
             (check-id (syntax->datum #'x) stx ellipsis-allowed? #f))
+       
        (values
-        (match (symbol->string (syntax-e #'x))
-          [(regexp #rx"^(.+)«([0-9]+)»$" (list _ base-name index))
-           (datum->syntax
-            stx (string->symbol (string-append base-name "«" index "☺»")) stx)]
-          [(regexp #rx"^(.+)«([0-9]+)([☺☹]+)»$" (list _ base-name index smiley-number))
-           (datum->syntax
-            stx
-            (string->symbol (string-append base-name
-                                           "«"
-                                           index
-                                           (to-smiley-number (+ 1 (from-smiley-number smiley-number)))
-                                           "»"))
-            stx)]
-          [_ stx])
+        #`(undatum (to-term 
+            (quasidatum 
+             #,(match (symbol->string (syntax-e #'x))
+                      [(regexp #rx"^(.+)«([0-9]+)»$" (list _ base-name index))
+                       (datum->syntax
+                        stx (string->symbol (string-append base-name "«" index "☺»")) stx)]
+                      [(regexp #rx"^(.+)«([0-9]+)([☺☹]+)»$" (list _ base-name index smiley-number))
+                       (datum->syntax
+                        stx
+                        (string->symbol (string-append base-name
+                                                       "«"
+                                                       index
+                                                       (to-smiley-number (+ 1 (from-smiley-number smiley-number)))
+                                                       "»"))
+                        stx)]
+                      [_ stx]))))
         0)]
-      [() (values stx 0)]
+      [() (values #`(undatum (to-term (quasidatum #,stx))) 0)]
       [(x ... . y)
        (not (null? (syntax->list #'(x ...))))
        (let-values ([(x-rewrite max-depth)
                      (let i-loop ([xs (syntax->list (syntax (x ...)))])
                        (cond
-                         [(null? xs) (rewrite/max-depth #'y depth #t #f)]
-                         [else
-                          (let ([new-depth (if (and (not (null? (cdr xs)))
-                                                    (identifier? (cadr xs))
-                                                    (free-identifier=? (quote-syntax ...)
-                                                                       (cadr xs)))
-                                               (+ depth 1)
-                                               depth)])
-                            (let-values ([(fst fst-max-depth)
-                                          (rewrite/max-depth (car xs) new-depth #t #f)]
-                                         [(rst rst-max-depth)
-                                          (i-loop (cdr xs))])
-                              (values (cons fst rst)
-                                      (max fst-max-depth rst-max-depth))))]))])
-         (values (datum->syntax stx x-rewrite stx stx) max-depth))]
+                        [(null? xs) (rewrite/max-depth #'y depth #t #f)]
+                        [else
+                         (let ([new-depth (if (and (not (null? (cdr xs)))
+                                                   (identifier? (cadr xs))
+                                                   (free-identifier=? (quote-syntax ...)
+                                                                      (cadr xs)))
+                                              (+ depth 1)
+                                              depth)])
+                           (let-values ([(fst fst-max-depth)
+                                         (rewrite/max-depth (car xs) new-depth #t #f)]
+                                        [(rst rst-max-depth)
+                                         (i-loop (cdr xs))])
+                             (values (cons fst rst)
+                                     (max fst-max-depth rst-max-depth))))]))])
+         ;; generate a function call that will lift the list into a term
+         (rewrite-application-but-not-args #'list->term
+                                           (datum->syntax stx x-rewrite stx stx) 
+                                           depth
+                                           max-depth
+                                           stx))]
       
-      [_ (values stx 0)]))
+      [_ (values #`(undatum (to-term (quasidatum #,stx))) 0)]))
 
   (define (check-id id stx ellipsis-allowed? term-id?)
     (define m (regexp-match #rx"^([^_]*)_" (symbol->string id)))

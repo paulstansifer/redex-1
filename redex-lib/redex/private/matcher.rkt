@@ -55,6 +55,8 @@ See match-a-pattern.rkt for more details
          "ambiguous.rkt"
          (only-in "binding-forms-definitions.rkt" bspec?))
 
+(require "term-repr.rkt")
+
 (define-struct compiled-pattern (cp binds-names? skip-dup-check? lang-α-equal?) #:transparent)
 
 (define caching-enabled? (make-parameter #t))
@@ -585,7 +587,7 @@ See match-a-pattern.rkt for more details
 
 ;; match-pattern : compiled-pattern exp -> (union #f (listof bindings))
 (define (match-pattern compiled-pattern exp)
-  (let ([results ((compiled-pattern-cp compiled-pattern) exp #f 0)])
+  (let ([results ((compiled-pattern-cp compiled-pattern) (a-t exp) #f 0)])
     (if (compiled-pattern-skip-dup-check? compiled-pattern)
         results
         (and results
@@ -764,6 +766,11 @@ See match-a-pattern.rkt for more details
                       hole-info nesting-depth))]
             ;; only returns a boolean, no need to freshen
             [else compiled-pattern-without-freshening]))
+
+         #;(define compiled-pattern
+           (match (procedure-arity compiled-pattern-no-sexps)
+                  [1 (lambda (exp) (compiled-pattern-no-sexps (from-term exp)))]
+                  [3 (lambda (exp h-i n-d) (compiled-pattern-no-sexps (from-term exp) h-i n-d))]))
 
 
          (unless (equal? (if (or has-hole? has-hide-hole? (not (null? names)))
@@ -974,12 +981,14 @@ See match-a-pattern.rkt for more details
        (values
         (cond
           [(not (or any-has-hole? any-has-hide-hole? (not (null? names))))
-           (λ (exp)
+           (λ (exp-term)
+              (define exp (term->list exp-term))
              (cond
                [(list? exp) (match-list/boolean rewritten exp)]
                [else #f]))]
           [(= 0 repeats)
-           (λ (exp hole-info nesting-depth)
+           (λ (exp-term hole-info nesting-depth)
+              (define exp (term->list exp-term))
              (cond
                [(list? exp)
                 ;; shortcircuit: if the list isn't the right length, give up immediately.
@@ -988,7 +997,8 @@ See match-a-pattern.rkt for more details
                     #f)]
                [else #f]))]
           [else
-           (λ (exp hole-info nesting-depth)
+           (λ (exp-term hole-info nesting-depth)
+              (define exp (term->list exp-term))
              (cond
                [(list? exp)
                 ;; shortcircuit: if the list doesn't have the right number of
@@ -1019,7 +1029,7 @@ See match-a-pattern.rkt for more details
   ;; simple-match : (any -> bool) -> (values <compiled-pattern> boolean boolean)
   ;; does a match based on a predicate
   (define (simple-match pred)
-    (values (lambda (exp) (pred exp))
+    (values (lambda (exp) (pred (from-term exp)))
             #f
             #f
             '()))
@@ -1729,7 +1739,7 @@ See match-a-pattern.rkt for more details
 (define (match-nt list-rhs non-list-rhs nt term hole-info lang-α-equal?)
   (if hole-info
       
-      (let loop ([rhss (if (or (null? term) (pair? term))
+      (let loop ([rhss (if (or (null? (term->list term)) (pair? (term->list term)))
                            list-rhs
                            non-list-rhs)]
                  [ans '()])
@@ -1759,7 +1769,7 @@ See match-a-pattern.rkt for more details
       
       ;; if we're not doing a decomposition, we just need
       ;; to find the first match, not all of the matches
-      (let loop ([rhss (if (or (null? term) (pair? term))
+      (let loop ([rhss (if (or (null? (term->list term)) (pair? (term->list term)))
                            list-rhs
                            non-list-rhs)])
         (cond
@@ -1771,7 +1781,7 @@ See match-a-pattern.rkt for more details
 (define check-redundancy (make-parameter #f))
 
 (define (match-nt/boolean list-rhs non-list-rhs nt term lang-α-equal?)
-  (let loop ([rhss (if (or (null? term) (pair? term))
+  (let loop ([rhss (if (or (null? (term->list term)) (pair? (term->list term)))
                        list-rhs
                        non-list-rhs)])
     (cond

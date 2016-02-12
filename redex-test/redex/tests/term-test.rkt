@@ -5,6 +5,8 @@
          racket/function
          "private/test-util.rkt")
 
+(require errortrace)
+
 (module test racket/base)
 
 (reset-count)

@@ -12,6 +12,9 @@
   
 (define (make-test-mtch a b c) (make-mtch a (build-flat-context b) c))
   
+(require (only-in redex/private/term term))
+
+
 (define (test)
   (let-syntax ([this-line (λ (stx) (datum->syntax #'here (syntax-line stx)))])
     (print-struct #t)
@@ -85,7 +88,7 @@
                 (list (make-test-mtch (make-bindings (list)) `(1 2) none)))
     
     (test-empty '(in-hole (name E_1 (list (hide-hole hole) hole)) x)
-                `(,the-hole x)
+                (term (,the-hole x))
                 (list (make-test-mtch (make-bindings (list (make-bind 'E_1 `(,the-not-hole ,the-hole)))) 
                                       `(,the-hole x)
                                       none)))
@@ -670,7 +673,7 @@
                                                             1
                                                             none)))
     (test-xab '(in-hole hole 1) 1 (list (make-mtch (make-bindings '()) 1 none)))
-    (test-xab '(hide-hole (list hole 1)) `(,the-hole 1) (list (make-mtch (make-bindings '()) `(,the-hole 1) none)))
+    (test-xab '(hide-hole (list hole 1)) (term (,the-hole 1)) (list (make-mtch (make-bindings '()) (term (,the-hole 1)) none)))
     (test-xab '(hide-hole (list 2 1)) `(2 1) (list (make-mtch (make-bindings '()) `(2 1) none)))
     (test-xab '(hide-hole (list (name z 2) 1)) `(2 1) (list (make-mtch (make-bindings (list (make-bind 'z 2))) `(2 1) none)))
     (test-xab `(side-condition (name x 1) ,(λ (bindings) (equal? bindings (make-bindings (list (make-bind 'x 1))))) 'srcloc)
@@ -694,9 +697,9 @@
               (list (make-mtch (make-bindings '()) '(1 1 1) none)))
     
     (test-xab '(in-hole (name hh-D (nt hh-D)) whatever)
-              `(,the-hole whatever)
+              (term (,the-hole whatever))
               (list (make-mtch (make-bindings (list (make-bind 'hh-D (list the-hole the-not-hole))))
-                               `(,the-hole whatever)
+                               (term (,the-hole whatever))
                                none)))
 
     ;;

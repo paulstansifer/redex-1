@@ -23,6 +23,8 @@
          compiled-lang-cclang
          default-language)
 
+(require "term-repr.rkt")
+
 ;; lang = (listof nt)
 ;; nt = (make-nt sym (listof rhs))
 ;; rhs = (make-rhs single-pattern)
@@ -48,9 +50,10 @@
             (write-string str port)
             (write-string ">" port)]))]
       #:inspector #f)
-    (define the-hole (hole 'the-hole))
-    (define the-not-hole (hole 'the-not-hole))
-    (values the-hole the-not-hole hole?)))
+    (define the-hole (to-term (hole 'the-hole)))
+    (define the-not-hole (to-term (hole 'the-not-hole)))
+    (values the-hole the-not-hole 
+            (lambda (anything) (and (tm? anything) (hole? (tm-content anything)))))))
 
 ;; bindings = (make-bindings (listof rib))
 ;; rib = (make-bind sym sexp)

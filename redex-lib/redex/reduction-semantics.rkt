@@ -10,9 +10,13 @@
          "private/error.rkt"
          "private/generate-term.rkt")
 
+(require "private/term-repr.rkt")
+
 (provide exn:fail:redex?) ;; from error.rkt
 
 (define (judgment-form? jf) (runtime-judgment-form? jf))
+
+(provide from-term to-term a-t a-non-t has-term?)
 
 (provide reduction-relation 
          --> fresh with ;; keywords for reduction-relation

@@ -11,6 +11,8 @@
          test-contract-violation
          test/proc)
 
+(require redex/private/term-repr)
+
 (define (read-syntax-test path)
   (call-with-input-file path
     (λ (port)
@@ -51,7 +53,7 @@
   (let ([got (with-handlers ((exn:fail? values)) (run))])
     (set! tests (+ tests 1))
     (unless (and (not (exn? got))
-                 (matches? got expected))
+                 (matches? got expected)) 
       (set! failures (+ 1 failures))
       (eprintf "test: file ~a line ~a:\n     got ~s\nexpected ~s\n"
                filename
@@ -76,6 +78,10 @@
   (let loop ([fst fst]
              [snd snd])
     (cond
+      [(tm? fst)
+       (loop (from-term fst) snd)]
+      [(tm? snd)
+       (loop fst (from-term snd))]
       [(pair? fst)
        (and (pair? snd) 
             (loop (car fst) (car snd))

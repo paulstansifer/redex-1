@@ -2,6 +2,8 @@
 (require "private/test-util.rkt"
          redex/reduction-semantics)
 
+(require errortrace)
+
 (module test racket/base)
 (reset-count)
 
@@ -445,7 +447,7 @@
 (let ()
   (define-metafunction empty-language
     [(f 0) 0]
-    [(f number) (f ,(- (term number) 1))])
+    [(f number) (f ,(- (from-term (term number)) 1))])
   
   (let ([sp (open-output-string)])
     (parameterize ([current-output-port sp])
@@ -458,7 +460,8 @@
                    [print-as-expression #f])
       (term (f 1)))
     (test (get-output-string sp) "c>(f 1)\n <0\n"))
-  
+ 
+
   (let ([sp (open-output-string)])
     (parameterize ([current-output-port sp]
                    [current-traced-metafunctions 'all]
@@ -467,15 +470,14 @@
       (term (f 1)))
     (test (get-output-string sp) " >(f 1)\n > (f 0)\n < 0\n <0\n"))
   
-  (let ([sp (open-output-string)])
+   (let ([sp (open-output-string)])
     (parameterize ([current-output-port sp]
                    [current-traced-metafunctions '(f)]
                    [print-as-expression #f])
       (term (f 1)))
     (test (get-output-string sp) "c>(f 1)\n <0\n"))
-  
-  
-  (define-metafunction empty-language
+
+   (define-metafunction empty-language
     [(g (any)) ((g any) (g any))]
     [(g 1) 1])
   
